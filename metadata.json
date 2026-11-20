@@ -1,0 +1,6 @@
+{
+  "name": "Sable Studio",
+  "description": "Editorial darkroom AI headshot photographer that transforms casual selfies into studio-grade professional portraits with customizable attire, framing, lighting, and natural-language retouching.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
