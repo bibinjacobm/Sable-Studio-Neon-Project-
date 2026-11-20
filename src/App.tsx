@@ -8,6 +8,7 @@ import {
   getFramingById,
   getLightingById,
   getStyleById,
+  suggestSmartCrop,
   type AdvancedLightingPresetId,
   type AspectRatioOption,
   type AttireId,
@@ -45,6 +46,7 @@ import {
 import {
   analyzeSelfieLocally,
   applyRetouchLocally,
+  detectFacialAlignmentLocally,
   planFramingLocally,
   safePostJson,
 } from './utils/localDarkroomAi';
@@ -53,6 +55,7 @@ const INITIAL_CONFIG: StudioDirectionConfig = {
   styleId: 'corporate-grey',
   attireId: 'keep-original',
   framingId: 'head-shoulders',
+  smartCrop: true,
   lightingId: 'softbox-key',
   advancedLightingPreset: 'none',
   aspectRatio: '3:4',
@@ -79,6 +82,7 @@ export default function App() {
   const [sliderPosition, setSliderPosition] = useState<number>(50);
   const [retouchPrompt, setRetouchPrompt] = useState<string>('');
   const [critique, setCritique] = useState<SelfieCritique | null>(null);
+  const [detectedAnchor, setDetectedAnchor] = useState<FramingAnchor | null>(null);
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationPhase, setGenerationPhase] = useState<string>('');
@@ -100,6 +104,19 @@ export default function App() {
     () => takes.find((t) => t.id === activeTakeId) ?? null,
     [takes, activeTakeId]
   );
+  const smartCropSuggestion = useMemo(
+    () => (detectedAnchor ? suggestSmartCrop(detectedAnchor, config.aspectRatio) : null),
+    [detectedAnchor, config.aspectRatio]
+  );
+
+  useEffect(() => {
+    if (!config.smartCrop || !smartCropSuggestion) return;
+    setConfig((prev) =>
+      prev.smartCrop && prev.framingId !== smartCropSuggestion.framingId
+        ? { ...prev, framingId: smartCropSuggestion.framingId }
+        : prev
+    );
+  }, [config.smartCrop, smartCropSuggestion]);
 
   useEffect(() => {
     if (!isGenerating) {
@@ -133,6 +150,8 @@ export default function App() {
       setSourcePortrait(processed);
       setCritique(null);
       setActiveTakeId(null);
+      const anchor = await detectFacialAlignmentLocally(processed.dataUrl);
+      setDetectedAnchor(anchor);
     } catch (err) {
       setErrorMessage(
         err instanceof Error ? err.message : 'Unable to load the selected photograph.'
@@ -194,6 +213,7 @@ export default function App() {
       styleId: critique.recommendedStyleId,
       attireId: critique.recommendedAttireId,
       framingId: critique.recommendedFramingId,
+      smartCrop: false,
       lightingId: critique.recommendedLightingId,
     }));
   };
@@ -233,13 +253,15 @@ export default function App() {
         styleId: config.styleId,
         attireId: config.attireId,
         framingId: config.framingId,
+        smartCrop: config.smartCrop,
+        detectedAnchor,
         lightingId: config.lightingId,
         advancedLightingPreset: config.advancedLightingPreset,
         aspectRatio: config.aspectRatio,
         extraNotes: config.extraNotes,
       });
 
-      let anchor: FramingAnchor = DEFAULT_ANCHOR;
+      let anchor: FramingAnchor = detectedAnchor ?? DEFAULT_ANCHOR;
       let recipe: DarkroomRecipe = buildDefaultRecipe(config);
       let directorNote: string | undefined;
 
@@ -252,6 +274,19 @@ export default function App() {
         anchor = localPlan.anchor;
         recipe = applyAdvancedLightingPreset(localPlan.recipe, config.advancedLightingPreset);
         directorNote = localPlan.directorNote;
+      }
+
+      // Sync refined vision-detected anchor & apply Smart Crop optics consistently
+      setDetectedAnchor(anchor);
+      if (config.smartCrop) {
+        const suggestion = suggestSmartCrop(anchor, config.aspectRatio);
+        recipe = {
+          ...recipe,
+          framingId: suggestion.framingId,
+          zoomAdjust: suggestion.zoomAdjust,
+          verticalOffset: suggestion.verticalOffset,
+          smartCrop: true,
+        };
       }
 
       setGenerationPhase('Isolating portrait silhouette');
@@ -352,6 +387,7 @@ export default function App() {
         styleId: nextRecipe.styleId,
         attireId: nextRecipe.attireId,
         framingId: nextRecipe.framingId,
+        smartCrop: Boolean(nextRecipe.smartCrop),
         lightingId: nextRecipe.lightingId,
       }));
 
@@ -401,6 +437,7 @@ export default function App() {
         styleId: found.recipe.styleId,
         attireId: found.recipe.attireId,
         framingId: found.recipe.framingId,
+        smartCrop: Boolean(found.recipe.smartCrop),
         lightingId: found.recipe.lightingId,
         advancedLightingPreset: found.recipe.advancedLightingPreset ?? 'none',
         aspectRatio: found.recipe.aspectRatio,
@@ -711,6 +748,7 @@ export default function App() {
                   config={config}
                   sourcePortrait={sourcePortrait}
                   critique={critique}
+                  smartCropSuggestion={smartCropSuggestion}
                   isGenerating={isGenerating}
                   isAnalyzing={isAnalyzing}
                   onStyleSelect={handleStyleSelect}
@@ -718,7 +756,17 @@ export default function App() {
                     setConfig((prev) => ({ ...prev, attireId }))
                   }
                   onFramingSelect={(framingId: FramingId) =>
-                    setConfig((prev) => ({ ...prev, framingId }))
+                    setConfig((prev) => ({ ...prev, framingId, smartCrop: false }))
+                  }
+                  onSmartCropToggle={(enabled: boolean) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      smartCrop: enabled,
+                      framingId:
+                        enabled && smartCropSuggestion
+                          ? smartCropSuggestion.framingId
+                          : prev.framingId,
+                    }))
                   }
                   onLightingSelect={(lightingId: LightingId) =>
                     setConfig((prev) => ({

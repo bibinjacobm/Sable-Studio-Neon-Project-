@@ -15,6 +15,7 @@ import {
   getFramingById,
   getLightingById,
   getStyleById,
+  suggestSmartCrop,
   type AspectRatioOption,
   type AttireId,
   type DarkroomRecipe,
@@ -128,6 +129,8 @@ app.post('/api/headshots/plan', async (req, res) => {
     styleId,
     attireId,
     framingId,
+    smartCrop,
+    detectedAnchor,
     lightingId,
     advancedLightingPreset,
     aspectRatio,
@@ -137,6 +140,7 @@ app.post('/api/headshots/plan', async (req, res) => {
   const safeStyle = getStyleById(styleId);
   const safeAttire = getAttireById(attireId);
   const safeFraming = getFramingById(framingId);
+  const safeSmartCrop = Boolean(smartCrop);
   const safeLighting = getLightingById(lightingId);
   const safeAdvancedPreset = getAdvancedLightingPresetById(advancedLightingPreset);
   const safeAspect = normalizeAspectRatio(aspectRatio);
@@ -145,6 +149,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     styleId: safeStyle.id,
     attireId: safeAttire.id,
     framingId: safeFraming.id,
+    smartCrop: safeSmartCrop,
     lightingId: safeLighting.id,
     advancedLightingPreset: safeAdvancedPreset.id,
     aspectRatio: safeAspect,
@@ -152,16 +157,25 @@ app.post('/api/headshots/plan', async (req, res) => {
   });
 
   const defaultAnchor: FramingAnchor = {
-    faceCenterX: 0.5,
-    faceCenterY: 0.37,
-    faceHeightRatio: 0.34,
+    faceCenterX: clamp(detectedAnchor?.faceCenterX, 0.2, 0.8, 0.5),
+    faceCenterY: clamp(detectedAnchor?.faceCenterY, 0.14, 0.7, 0.37),
+    faceHeightRatio: clamp(detectedAnchor?.faceHeightRatio, 0.15, 0.65, 0.34),
   };
 
   const ai = createGeminiClient();
   if (!ai || !sourceBase64 || typeof sourceBase64 !== 'string') {
+    const smartSuggestion = safeSmartCrop ? suggestSmartCrop(defaultAnchor, safeAspect) : null;
     res.json({
       anchor: defaultAnchor,
-      recipe: baseRecipe,
+      recipe: smartSuggestion
+        ? {
+            ...baseRecipe,
+            framingId: smartSuggestion.framingId,
+            zoomAdjust: smartSuggestion.zoomAdjust,
+            verticalOffset: smartSuggestion.verticalOffset,
+            smartCrop: true,
+          }
+        : baseRecipe,
       directorNote: `Developed on ${safeStyle.name} with ${safeLighting.label.toLowerCase()} and calibrated tonal balance.`,
     });
     return;
@@ -244,9 +258,17 @@ Return:
       faceHeightRatio: clamp(parsed.faceHeightRatio, 0.15, 0.65, 0.34),
     };
 
+    const smartSuggestion = safeSmartCrop ? suggestSmartCrop(anchor, safeAspect) : null;
+
     const calibratedRecipe: DarkroomRecipe = applyAdvancedLightingPreset(
       {
         ...baseRecipe,
+        framingId: smartSuggestion ? smartSuggestion.framingId : baseRecipe.framingId,
+        zoomAdjust: smartSuggestion ? smartSuggestion.zoomAdjust : baseRecipe.zoomAdjust,
+        verticalOffset: smartSuggestion
+          ? smartSuggestion.verticalOffset
+          : baseRecipe.verticalOffset,
+        smartCrop: safeSmartCrop,
         exposure: clamp(
           baseRecipe.exposure + clamp(parsed.exposureDelta, -0.22, 0.22, 0),
           -0.35,
@@ -305,6 +327,7 @@ app.post('/api/headshots/retouch-recipe', async (req, res) => {
       styleId: getStyleById(currentRecipe?.styleId).id,
       attireId: getAttireById(currentRecipe?.attireId).id,
       framingId: getFramingById(currentRecipe?.framingId).id,
+      smartCrop: Boolean(currentRecipe?.smartCrop),
       lightingId: getLightingById(currentRecipe?.lightingId).id,
       advancedLightingPreset: getAdvancedLightingPresetById(currentRecipe?.advancedLightingPreset)
         .id,
@@ -401,10 +424,14 @@ Rules:
       directorNote?: string;
     };
 
+    const resolvedFramingId = getFramingById(parsed.framingId ?? fallbackRecipe.framingId).id;
+    const framingChanged = resolvedFramingId !== fallbackRecipe.framingId;
+
     const nextRecipe: DarkroomRecipe = {
       styleId: getStyleById(parsed.styleId ?? fallbackRecipe.styleId).id,
       attireId: getAttireById(parsed.attireId ?? fallbackRecipe.attireId).id,
-      framingId: getFramingById(parsed.framingId ?? fallbackRecipe.framingId).id,
+      framingId: resolvedFramingId,
+      smartCrop: framingChanged ? false : Boolean(fallbackRecipe.smartCrop),
       lightingId: getLightingById(parsed.lightingId ?? fallbackRecipe.lightingId).id,
       aspectRatio: fallbackRecipe.aspectRatio,
       exposure: clamp(parsed.exposure, -0.35, 0.35, fallbackRecipe.exposure),
@@ -478,10 +505,12 @@ function applyHeuristicRetouch(prompt: string, current: DarkroomRecipe): Darkroo
   if (lower.includes('tight') || lower.includes('closer') || lower.includes('zoom in')) {
     next.framingId = 'tight-headshot';
     next.zoomAdjust = Math.min(1.28, next.zoomAdjust + 0.12);
+    next.smartCrop = false;
   }
   if (lower.includes('wide') || lower.includes('zoom out')) {
     next.framingId = 'mid-chest';
     next.zoomAdjust = Math.max(0.88, next.zoomAdjust - 0.1);
+    next.smartCrop = false;
   }
   if (lower.includes('navy')) next.attireId = 'smart-knit';
   else if (lower.includes('charcoal') || lower.includes('blazer')) next.attireId = 'charcoal-blazer';

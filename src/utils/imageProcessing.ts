@@ -244,7 +244,8 @@ export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<v
 
   const blob = await zip.generateAsync({
     type: 'blob',
-    compression: 'STORE',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
   });
 
   const objectUrl = URL.createObjectURL(blob);

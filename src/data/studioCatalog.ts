@@ -63,12 +63,23 @@ export interface DarkroomRecipe {
   sharpen?: number;
   /** Optional creative lighting preset override */
   advancedLightingPreset?: AdvancedLightingPresetId;
+  /** Whether framing was auto-selected via facial alignment Smart Crop */
+  smartCrop?: boolean;
 }
 
 export interface FramingAnchor {
   faceCenterX: number;
   faceCenterY: number;
   faceHeightRatio: number;
+}
+
+export interface SmartCropSuggestion {
+  framingId: FramingId;
+  zoomAdjust: number;
+  verticalOffset: number;
+  eyeLinePercent: number;
+  faceScalePercent: number;
+  reason: string;
 }
 
 export interface StudioStylePreset {
@@ -107,6 +118,7 @@ export interface StudioDirectionConfig {
   styleId: StyleId;
   attireId: AttireId;
   framingId: FramingId;
+  smartCrop: boolean;
   lightingId: LightingId;
   advancedLightingPreset: AdvancedLightingPresetId;
   aspectRatio: AspectRatioOption;
@@ -450,6 +462,67 @@ export function applyAdvancedLightingPreset(
   }
 }
 
+export function suggestSmartCrop(
+  anchor: FramingAnchor,
+  aspectRatio: AspectRatioOption
+): SmartCropSuggestion {
+  const faceX = Math.max(0.15, Math.min(0.85, anchor.faceCenterX));
+  const faceY = Math.max(0.14, Math.min(0.72, anchor.faceCenterY));
+  const faceRatio = Math.max(0.14, Math.min(0.65, anchor.faceHeightRatio));
+
+  const estimatedCrownY = Math.max(0, faceY - faceRatio * 0.45);
+  const estimatedShoulderRoom = Math.max(0, 1 - (faceY + faceRatio * 0.55));
+
+  let framingId: FramingId = 'head-shoulders';
+  let reason = 'Balanced facial scale and headroom suit classic 85mm head & shoulders.';
+
+  if (faceRatio >= 0.41 || estimatedCrownY < 0.08 || faceY < 0.24) {
+    framingId = 'tight-headshot';
+    reason =
+      faceRatio >= 0.41
+        ? 'Close subject scale fits an 85mm tight headshot without cropping loss.'
+        : 'Compact top headroom favors an 85mm tight headshot crop.';
+  } else if (faceRatio <= 0.26 && faceY <= 0.46 && estimatedShoulderRoom >= 0.28) {
+    framingId = 'mid-chest';
+    reason = 'Generous headroom and shoulder margin suit a 50mm mid-chest editorial crop.';
+  }
+
+  // Subtle horizontal recentering margin when the face starts off-center
+  const offCenterX = Math.abs(faceX - 0.5);
+  let zoomAdjust = 1;
+  if (offCenterX > 0.07) {
+    zoomAdjust += Math.min(0.1, (offCenterX - 0.07) * 0.45);
+  }
+  if (framingId === 'tight-headshot' && faceRatio > 0.48) {
+    zoomAdjust = Math.max(0.94, zoomAdjust - 0.05);
+  }
+
+  // Fine-tune eye-line height for aspect ratio and top headroom clearance
+  let verticalOffset = 0;
+  if (aspectRatio === '1:1') {
+    verticalOffset += 0.02;
+  } else if (aspectRatio === '4:3') {
+    verticalOffset -= 0.02;
+  }
+  if (estimatedCrownY < 0.1) {
+    verticalOffset -= 0.025;
+  } else if (faceY > 0.48) {
+    verticalOffset += 0.02;
+  }
+
+  zoomAdjust = Math.round(Math.max(0.94, Math.min(1.12, zoomAdjust)) * 100) / 100;
+  verticalOffset = Math.round(Math.max(-0.06, Math.min(0.06, verticalOffset)) * 1000) / 1000;
+
+  return {
+    framingId,
+    zoomAdjust,
+    verticalOffset,
+    eyeLinePercent: Math.round(faceY * 100),
+    faceScalePercent: Math.round(faceRatio * 100),
+    reason,
+  };
+}
+
 export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecipe {
   const style = getStyleById(config.styleId);
   const base = style.defaultRecipe;
@@ -457,6 +530,7 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
     styleId: config.styleId,
     attireId: config.attireId,
     framingId: config.framingId,
+    smartCrop: Boolean(config.smartCrop),
     lightingId: config.lightingId,
     advancedLightingPreset: config.advancedLightingPreset ?? 'none',
     aspectRatio: config.aspectRatio,

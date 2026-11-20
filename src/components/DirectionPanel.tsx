@@ -18,6 +18,7 @@ import {
   type FramingId,
   type LightingId,
   type SelfieCritique,
+  type SmartCropSuggestion,
   type SourcePortrait,
   type StudioDirectionConfig,
   type StyleId,
@@ -27,11 +28,13 @@ interface DirectionPanelProps {
   config: StudioDirectionConfig;
   sourcePortrait: SourcePortrait | null;
   critique: SelfieCritique | null;
+  smartCropSuggestion: SmartCropSuggestion | null;
   isGenerating: boolean;
   isAnalyzing: boolean;
   onStyleSelect: (styleId: StyleId) => void;
   onAttireSelect: (attireId: AttireId) => void;
   onFramingSelect: (framingId: FramingId) => void;
+  onSmartCropToggle: (enabled: boolean) => void;
   onLightingSelect: (lightingId: LightingId) => void;
   onAdvancedLightingSelect: (presetId: AdvancedLightingPresetId) => void;
   onAspectRatioSelect: (ratio: AspectRatioOption) => void;
@@ -45,11 +48,13 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   config,
   sourcePortrait,
   critique,
+  smartCropSuggestion,
   isGenerating,
   isAnalyzing,
   onStyleSelect,
   onAttireSelect,
   onFramingSelect,
+  onSmartCropToggle,
   onLightingSelect,
   onAdvancedLightingSelect,
   onAspectRatioSelect,
@@ -210,10 +215,50 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
       {/* 03. Lens Framing & 04. Studio Lighting */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
         <div>
-          <h3 className="mb-2.5 text-xs font-semibold text-[#F5F1E8]">03. Lens Framing</h3>
+          <div className="mb-2.5 flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold text-[#F5F1E8] whitespace-nowrap">
+              03. Lens Framing
+            </h3>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={config.smartCrop}
+              onClick={() => onSmartCropToggle(!config.smartCrop)}
+              title="Automatically suggest optimal framing from detected facial alignment"
+              className="inline-flex items-center gap-2 rounded py-0.5 text-xs transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer whitespace-nowrap shrink-0"
+            >
+              <span
+                className={
+                  config.smartCrop
+                    ? 'font-medium text-[#D4A853]'
+                    : 'text-[#9B968C] hover:text-[#F5F1E8]'
+                }
+              >
+                Smart Crop
+              </span>
+              <span
+                aria-hidden="true"
+                className={`relative inline-flex h-4 w-7 shrink-0 items-center rounded-full border transition-colors duration-150 ${
+                  config.smartCrop
+                    ? 'border-[#D4A853] bg-[#D4A853]/30'
+                    : 'border-white/15 bg-[#0B0B0C]'
+                }`}
+              >
+                <span
+                  className={`inline-block h-2.5 w-2.5 rounded-full transition-transform duration-150 ${
+                    config.smartCrop
+                      ? 'translate-x-3.5 bg-[#D4A853]'
+                      : 'translate-x-0.5 bg-[#9B968C]'
+                  }`}
+                />
+              </span>
+            </button>
+          </div>
           <div className="flex flex-col gap-1.5">
             {FRAMING_OPTIONS.map((option) => {
               const active = config.framingId === option.id;
+              const isAutoSuggested =
+                config.smartCrop && smartCropSuggestion?.framingId === option.id;
               return (
                 <button
                   key={option.id}
@@ -227,13 +272,35 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
                   }`}
                 >
                   <span className="font-medium whitespace-nowrap truncate">{option.label}</span>
-                  <span className="font-mono text-[11px] text-[#9B968C] whitespace-nowrap shrink-0">
-                    {option.shortSpec}
+                  <span
+                    className={`font-mono text-[11px] whitespace-nowrap shrink-0 ${
+                      isAutoSuggested ? 'text-[#D4A853]' : 'text-[#9B968C]'
+                    }`}
+                  >
+                    {isAutoSuggested ? `Auto · ${option.shortSpec}` : option.shortSpec}
                   </span>
                 </button>
               );
             })}
           </div>
+          {config.smartCrop && (
+            <p className="mt-2 text-[11px] leading-relaxed text-[#9B968C]">
+              {smartCropSuggestion ? (
+                <>
+                  <span className="font-medium text-[#D4A853]">Aligned:</span>{' '}
+                  <span className="font-mono tabular-nums">
+                    Eye {smartCropSuggestion.eyeLinePercent}%
+                  </span>{' '}
+                  <span aria-hidden="true">·</span>{' '}
+                  <span className="font-mono tabular-nums">
+                    Scale {smartCropSuggestion.faceScalePercent}%
+                  </span>
+                </>
+              ) : (
+                'Auto-suggests optimal crop from facial alignment once a selfie is uploaded.'
+              )}
+            </p>
+          )}
         </div>
 
         <div>

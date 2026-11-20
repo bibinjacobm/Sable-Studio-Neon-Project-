@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  Archive,
   ArrowDownUp,
   Camera,
   Check,
@@ -12,6 +13,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type { GeneratedTake } from '../data/studioCatalog';
+import { downloadAllPortraitsZip } from '../utils/imageProcessing';
 
 type HistoryFilter = 'all' | 'retouched';
 type HistorySortOrder = 'newest' | 'oldest';
@@ -53,6 +55,25 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>('newest');
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [isExportingZip, setIsExportingZip] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleDownloadAll = async () => {
+    if (takes.length === 0 || isExportingZip) return;
+    setExportError(null);
+    setIsExportingZip(true);
+    try {
+      await downloadAllPortraitsZip(takes);
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to create compressed ZIP archive. Please try again.'
+      );
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
 
   const retouchedCount = useMemo(
     () => takes.filter((take) => Boolean(take.retouchPrompt)).length,
@@ -86,15 +107,36 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
     <div className="flex flex-col gap-5">
       {/* Panel Header */}
       <div className="border-b border-white/[0.07] pb-4">
-        <div className="flex items-baseline justify-between gap-3">
-          <h2 className="font-serif text-2xl font-semibold text-[#F5F1E8]">Session History</h2>
-          <span className="font-mono text-xs tabular-nums text-[#9B968C] whitespace-nowrap shrink-0">
-            {takes.length} {takes.length === 1 ? 'take' : 'takes'}
-          </span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-baseline gap-2.5">
+            <h2 className="font-serif text-2xl font-semibold text-[#F5F1E8]">Session History</h2>
+            <span className="font-mono text-xs tabular-nums text-[#9B968C] whitespace-nowrap shrink-0">
+              {takes.length} {takes.length === 1 ? 'take' : 'takes'}
+            </span>
+          </div>
+
+          {takes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleDownloadAll()}
+              disabled={isExportingZip}
+              aria-label={`Download all ${takes.length} session takes as a compressed ZIP archive`}
+              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-[#D4A853]/50 bg-[#0B0B0C] px-3 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+            >
+              <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+              <span>{isExportingZip ? 'Compressing...' : 'Download All'}</span>
+            </button>
+          )}
         </div>
         <p className="mt-0.5 text-xs text-[#9B968C]">
           Click any generated headshot to toggle it immediately on the portrait stage
         </p>
+
+        {exportError && (
+          <p role="alert" className="mt-2.5 text-xs text-amber-300">
+            {exportError}
+          </p>
+        )}
       </div>
 
       {takes.length === 0 ? (

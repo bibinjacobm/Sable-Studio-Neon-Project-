@@ -1,5 +1,7 @@
 import {
   buildDefaultRecipe,
+  getFramingById,
+  suggestSmartCrop,
   type DarkroomRecipe,
   type FramingAnchor,
   type SelfieCritique,
@@ -117,6 +119,167 @@ async function measureImagePhotometrics(dataUrl: string): Promise<PhotometricSta
 }
 
 /**
+ * Fast client-side facial alignment estimator using YCbCr skin-cluster centroid and
+ * upper-portrait vertical span projection (~10ms on a 128px canvas).
+ * Gives immediate Smart Crop suggestions on upload and in static deployments.
+ */
+export async function detectFacialAlignmentLocally(dataUrl: string): Promise<FramingAnchor> {
+  const fallback: FramingAnchor = {
+    faceCenterX: 0.5,
+    faceCenterY: 0.36,
+    faceHeightRatio: 0.34,
+  };
+
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Image load failed'));
+      el.src = dataUrl;
+    });
+
+    const sampleW = 128;
+    const sampleH = Math.max(
+      64,
+      Math.round((img.naturalHeight / Math.max(1, img.naturalWidth)) * sampleW)
+    );
+    const canvas = document.createElement('canvas');
+    canvas.width = sampleW;
+    canvas.height = sampleH;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return fallback;
+
+    ctx.drawImage(img, 0, 0, sampleW, sampleH);
+    const { data } = ctx.getImageData(0, 0, sampleW, sampleH);
+
+    // Pass 1: find horizontal skin-likelihood centroid in the upper 75% portrait region
+    const colWeights = new Float32Array(sampleW);
+    const skinMap = new Float32Array(sampleW * sampleH);
+    const upperLimitY = Math.floor(sampleH * 0.78);
+    let totalWeight = 0;
+    let sumX = 0;
+
+    for (let y = Math.floor(sampleH * 0.04); y < upperLimitY; y++) {
+      const ny = y / sampleH;
+      const yPrior = Math.exp(-Math.pow((ny - 0.36) / 0.34, 2));
+      for (let x = Math.floor(sampleW * 0.1); x < Math.ceil(sampleW * 0.9); x++) {
+        const idx = (y * sampleW + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
+        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
+
+        if (
+          lum >= 32 &&
+          lum <= 245 &&
+          cb >= 74 &&
+          cb <= 129 &&
+          cr >= 131 &&
+          cr <= 178 &&
+          r >= b - 4
+        ) {
+          const nx = x / sampleW;
+          const xPrior = Math.exp(-Math.pow((nx - 0.5) / 0.38, 2));
+          const chromaScore =
+            Math.exp(-Math.pow((cb - 103) / 24, 2)) * Math.exp(-Math.pow((cr - 151) / 22, 2));
+          const w = (0.35 + 0.65 * chromaScore) * xPrior * yPrior;
+          skinMap[y * sampleW + x] = w;
+          colWeights[x] += w;
+          totalWeight += w;
+          sumX += x * w;
+        }
+      }
+    }
+
+    // Require enough skin signal to trust the cluster (handles monochrome/silhouettes safely)
+    if (totalWeight < sampleW * sampleH * 0.008) {
+      return fallback;
+    }
+
+    const roughCx = sumX / totalWeight;
+    const bandHalfW = Math.max(12, Math.round(sampleW * 0.24));
+    const minBandX = Math.max(0, Math.floor(roughCx - bandHalfW));
+    const maxBandX = Math.min(sampleW - 1, Math.ceil(roughCx + bandHalfW));
+
+    // Pass 2: vertical projection inside the face column band to isolate face bounds cleanly
+    const rowWeights = new Float32Array(sampleH);
+    let maxRowWeight = 0;
+    let refinedSumX = 0;
+    let refinedSumY = 0;
+    let refinedWeight = 0;
+
+    for (let y = Math.floor(sampleH * 0.04); y < upperLimitY; y++) {
+      let rw = 0;
+      for (let x = minBandX; x <= maxBandX; x++) {
+        const w = skinMap[y * sampleW + x];
+        if (w > 0) {
+          rw += w;
+          refinedSumX += x * w;
+          refinedSumY += y * w;
+          refinedWeight += w;
+        }
+      }
+      rowWeights[y] = rw;
+      if (rw > maxRowWeight) {
+        maxRowWeight = rw;
+      }
+    }
+
+    if (refinedWeight <= 0 || maxRowWeight <= 0) {
+      return fallback;
+    }
+
+    const rowThreshold = maxRowWeight * 0.28;
+    let peakY = Math.round(refinedSumY / refinedWeight);
+    for (let y = 0; y < upperLimitY; y++) {
+      if (rowWeights[y] >= maxRowWeight * 0.92) {
+        peakY = y;
+        break;
+      }
+    }
+
+    // Expand upward and downward from the peak face row to find forehead-to-chin extent
+    let topFaceY = peakY;
+    while (topFaceY > 0 && rowWeights[topFaceY - 1] >= rowThreshold) {
+      topFaceY -= 1;
+    }
+    let bottomFaceY = peakY;
+    const maxAllowedSpan = Math.round(sampleH * 0.56);
+    while (
+      bottomFaceY < upperLimitY - 1 &&
+      bottomFaceY - topFaceY < maxAllowedSpan &&
+      rowWeights[bottomFaceY + 1] >= rowThreshold
+    ) {
+      bottomFaceY += 1;
+    }
+
+    // Estimate crown-to-chin head height (hair/forehead adds ~22% above detected skin top)
+    const skinSpan = Math.max(sampleH * 0.14, bottomFaceY - topFaceY + 1);
+    const estimatedHeadH = skinSpan * 1.24;
+    const estimatedCrownY = Math.max(0, topFaceY - skinSpan * 0.22);
+
+    const faceCenterX = Math.max(0.24, Math.min(0.76, refinedSumX / refinedWeight / sampleW));
+    // Eyes/nose bridge sit ~44% down from crown to chin
+    const faceCenterY = Math.max(
+      0.18,
+      Math.min(0.62, (estimatedCrownY + estimatedHeadH * 0.44) / sampleH)
+    );
+    const faceHeightRatio = Math.max(0.18, Math.min(0.56, estimatedHeadH / sampleH));
+
+    return {
+      faceCenterX: Math.round(faceCenterX * 1000) / 1000,
+      faceCenterY: Math.round(faceCenterY * 1000) / 1000,
+      faceHeightRatio: Math.round(faceHeightRatio * 1000) / 1000,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Genuine client-side photometric selfie analysis used seamlessly whenever
  * the server API route is unavailable (e.g., static publish).
  */
@@ -204,11 +367,8 @@ export async function planFramingLocally(
   config: StudioDirectionConfig
 ): Promise<{ anchor: FramingAnchor; recipe: DarkroomRecipe; directorNote: string }> {
   const baseRecipe = buildDefaultRecipe(config);
-  const anchor: FramingAnchor = {
-    faceCenterX: 0.5,
-    faceCenterY: 0.36,
-    faceHeightRatio: 0.34,
-  };
+  const anchor = await detectFacialAlignmentLocally(dataUrl);
+  const smartCrop = config.smartCrop ? suggestSmartCrop(anchor, config.aspectRatio) : null;
 
   try {
     const stats = await measureImagePhotometrics(dataUrl);
@@ -225,12 +385,17 @@ export async function planFramingLocally(
 
     const calibrated: DarkroomRecipe = {
       ...baseRecipe,
+      framingId: smartCrop ? smartCrop.framingId : baseRecipe.framingId,
+      zoomAdjust: smartCrop ? smartCrop.zoomAdjust : baseRecipe.zoomAdjust,
+      verticalOffset: smartCrop ? smartCrop.verticalOffset : baseRecipe.verticalOffset,
+      smartCrop: Boolean(config.smartCrop),
       exposure: Math.max(-0.3, Math.min(0.32, baseRecipe.exposure + exposureDelta)),
       warmth: Math.max(-0.3, Math.min(0.3, baseRecipe.warmth + warmthCorrection)),
     };
 
-    const note =
-      exposureDelta > 0.05
+    const note = smartCrop
+      ? `Smart Crop selected ${getFramingById(smartCrop.framingId).label} from facial alignment and balanced studio illumination.`
+      : exposureDelta > 0.05
         ? 'Lifted facial midtones evenly and neutralized ambient cast for clean studio polish.'
         : 'Balanced studio exposure, backdrop depth, and uniform facial key illumination.';
 
@@ -238,7 +403,15 @@ export async function planFramingLocally(
   } catch {
     return {
       anchor,
-      recipe: baseRecipe,
+      recipe: smartCrop
+        ? {
+            ...baseRecipe,
+            framingId: smartCrop.framingId,
+            zoomAdjust: smartCrop.zoomAdjust,
+            verticalOffset: smartCrop.verticalOffset,
+            smartCrop: true,
+          }
+        : baseRecipe,
       directorNote: 'Balanced studio exposure and clean backdrop separation applied.',
     };
   }
@@ -297,11 +470,13 @@ export function applyRetouchLocally(
   if (lower.includes('tight') || lower.includes('closer') || lower.includes('zoom in') || lower.includes('85mm')) {
     next.framingId = 'tight-headshot';
     next.zoomAdjust = Math.min(1.26, next.zoomAdjust + 0.1);
+    next.smartCrop = false;
     notes.push('tighter 85mm crop');
   }
   if (lower.includes('wide') || lower.includes('zoom out') || lower.includes('mid-chest')) {
     next.framingId = 'mid-chest';
     next.zoomAdjust = Math.max(0.88, next.zoomAdjust - 0.1);
+    next.smartCrop = false;
     notes.push('wider editorial crop');
   }
 
