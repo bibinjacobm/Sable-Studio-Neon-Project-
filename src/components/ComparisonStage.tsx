@@ -37,6 +37,7 @@ import {
 import { EditorialLightingGuideOverlay } from './EditorialLightingGuideOverlay';
 import { LightingCompassOverlay } from './LightingCompassOverlay';
 import { LightingHistogram } from './LightingHistogram';
+import { SharePortraitPopover } from './SharePortraitPopover';
 import { SymmetryAnalysisCard } from './SymmetryAnalysisCard';
 import { SymmetryAxisOverlay } from './SymmetryAxisOverlay';
 
@@ -597,16 +598,17 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 type="button"
                 onClick={onInspect}
                 title="Inspect Fullscreen (I)"
-                className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md border border-white/[0.09] bg-[#141416] px-3 py-1.5 text-xs font-medium text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-white/25 hover:bg-[#1C1C1F] cursor-pointer"
+                className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md border border-white/[0.09] bg-[#141416] px-3 py-1.5 text-xs font-medium text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-white/25 hover:bg-[#1C1C1F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
               >
                 <Expand className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Inspect</span>
               </button>
+              <SharePortraitPopover take={activeTake} />
               <button
                 type="button"
                 onClick={() => onDownload(activeTake)}
                 title="Download PNG (D)"
-                className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md bg-[#F5F1E8] px-3 py-1.5 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[#E7E0D0] cursor-pointer"
+                className="inline-flex min-h-[34px] items-center gap-1.5 rounded-md bg-[#F5F1E8] px-3 py-1.5 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[#E7E0D0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
               >
                 <Download className="h-3.5 w-3.5" aria-hidden="true" />
                 <span>Download</span>

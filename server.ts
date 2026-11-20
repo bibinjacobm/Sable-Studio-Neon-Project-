@@ -1,5 +1,7 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
@@ -9,6 +11,7 @@ import {
   LIGHTING_OPTIONS,
   STUDIO_STYLES,
   applyAdvancedLightingPreset,
+  buildContextualRetouchSuggestions,
   buildDefaultRecipe,
   getAdvancedLightingPresetById,
   getAttireById,
@@ -745,12 +748,22 @@ app.post('/api/headshots/suggest-retouches', async (req, res) => {
     previousSuggestions,
   } = req.body ?? {};
 
+  const avoidList = Array.isArray(previousSuggestions)
+    ? previousSuggestions
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .slice(0, 12)
+    : [];
+
+  const localFallbackSuggestions = () =>
+    buildContextualRetouchSuggestions(
+      recipe,
+      avoidList,
+      typeof retouchPrompt === 'string' ? retouchPrompt : undefined
+    );
+
   const ai = createGeminiClient();
   if (!ai) {
-    res.status(503).json({
-      error:
-        'Gemini API key is not configured in Settings > Secrets. Add a Gemini API key to use AI Auto-Suggest.',
-    });
+    res.json({ suggestions: localFallbackSuggestions(), source: 'darkroom' });
     return;
   }
 
@@ -759,12 +772,6 @@ app.post('/api/headshots/suggest-retouches', async (req, res) => {
   const safeFraming = getFramingById(recipe?.framingId);
   const safeLighting = getLightingById(recipe?.lightingId);
   const safeAdvancedPreset = getAdvancedLightingPresetById(recipe?.advancedLightingPreset);
-
-  const avoidList = Array.isArray(previousSuggestions)
-    ? previousSuggestions
-        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
-        .slice(0, 8)
-    : [];
 
   const promptText = `You are a veteran editorial portrait retoucher inside Sable Studio.
 Suggest 4 concise, actionable, studio-authentic retouching instructions tailored to this portrait's current settings.
@@ -837,23 +844,303 @@ Requirements:
     }
   }
 
-  const rawMessage = lastError instanceof Error ? lastError.message : '';
-  const lower = rawMessage.toLowerCase();
-  if (lower.includes('403') || lower.includes('permission_denied') || lower.includes('api_key_invalid')) {
-    res.status(403).json({
-      error: 'Gemini API key was rejected. Check your API key in Settings > Secrets.',
+  // Seamless 100% free fallback if the optional API call fails or hits rate limits
+  void lastError;
+  res.json({ suggestions: localFallbackSuggestions(), source: 'darkroom' });
+});
+
+// ============================================================================
+// Permanent Portrait Image Links & Social Share Preview Cards
+// ============================================================================
+const SHARE_STORE_DIR = path.resolve(__dirname, '.sable-shares');
+const SHARE_ID_PATTERN = /^[a-f0-9]{16}$/;
+const MAX_SHARE_BYTES = 18 * 1024 * 1024;
+
+interface StoredShareMeta {
+  id: string;
+  ext: 'png' | 'jpg' | 'webp';
+  mimeType: string;
+  styleName: string;
+  lightingLabel: string;
+  framingLabel: string;
+  aspectRatio: string;
+  frameNumber: number;
+  createdAt: string;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function ensureShareStoreDir(): void {
+  if (!fs.existsSync(SHARE_STORE_DIR)) {
+    fs.mkdirSync(SHARE_STORE_DIR, { recursive: true });
+  }
+}
+
+function resolveRequestOrigin(req: express.Request): string {
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const proto = forwardedProto || req.protocol || 'https';
+  const host = req.get('x-forwarded-host')?.split(',')[0]?.trim() || req.get('host') || `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
+
+app.post('/api/shares', (req, res) => {
+  try {
+    const {
+      imageDataUrl,
+      styleName,
+      lightingLabel,
+      framingLabel,
+      aspectRatio,
+      frameNumber,
+    } = req.body ?? {};
+
+    if (typeof imageDataUrl !== 'string') {
+      res.status(400).json({ error: 'Portrait image data is required to create a share link.' });
+      return;
+    }
+
+    const match = imageDataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\s]+)$/);
+    if (!match) {
+      res.status(400).json({ error: 'Unsupported portrait image format. Expected PNG, JPEG, or WebP.' });
+      return;
+    }
+
+    const mimeType = match[1];
+    const base64Body = match[2].replace(/\s+/g, '');
+    const imageBuffer = Buffer.from(base64Body, 'base64');
+
+    if (imageBuffer.length === 0 || imageBuffer.length > MAX_SHARE_BYTES) {
+      res.status(413).json({ error: 'Portrait image exceeds the 18 MB sharing limit.' });
+      return;
+    }
+
+    const ext: 'png' | 'jpg' | 'webp' =
+      mimeType === 'image/jpeg' ? 'jpg' : mimeType === 'image/webp' ? 'webp' : 'png';
+
+    // Content-addressed 16-hex-char ID guarantees permanent, deduplicated immutable links
+    const id = crypto.createHash('sha256').update(imageBuffer).digest('hex').slice(0, 16);
+
+    ensureShareStoreDir();
+    const imageFilePath = path.join(SHARE_STORE_DIR, `${id}.${ext}`);
+    const metaFilePath = path.join(SHARE_STORE_DIR, `${id}.json`);
+
+    if (!fs.existsSync(imageFilePath)) {
+      fs.writeFileSync(imageFilePath, imageBuffer);
+    }
+
+    const meta: StoredShareMeta = {
+      id,
+      ext,
+      mimeType,
+      styleName:
+        typeof styleName === 'string' && styleName.trim()
+          ? styleName.trim().slice(0, 80)
+          : 'Studio Portrait',
+      lightingLabel:
+        typeof lightingLabel === 'string' && lightingLabel.trim()
+          ? lightingLabel.trim().slice(0, 80)
+          : 'Studio Lighting',
+      framingLabel:
+        typeof framingLabel === 'string' && framingLabel.trim()
+          ? framingLabel.trim().slice(0, 80)
+          : 'Head & Shoulders',
+      aspectRatio: normalizeAspectRatio(aspectRatio),
+      frameNumber:
+        typeof frameNumber === 'number' && Number.isFinite(frameNumber) && frameNumber > 0
+          ? Math.round(frameNumber)
+          : 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    if (!fs.existsSync(metaFilePath)) {
+      fs.writeFileSync(metaFilePath, JSON.stringify(meta, null, 2), 'utf8');
+    }
+
+    res.json({
+      id,
+      imagePath: `/api/shares/${id}/image.${ext}`,
+      sharePath: `/share/${id}`,
     });
+  } catch (err) {
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Unable to persist portrait share link.',
+    });
+  }
+});
+
+app.get('/api/shares/:id/image.:ext', (req, res) => {
+  const { id, ext } = req.params;
+  if (!SHARE_ID_PATTERN.test(id) || !/^(png|jpg|webp)$/.test(ext)) {
+    res.status(404).json({ error: 'Shared portrait not found.' });
     return;
   }
-  if (lower.includes('429') || lower.includes('resource_exhausted')) {
-    res.status(429).json({
-      error: 'Rate limit reached on the Gemini API. Wait a moment and try Auto-Suggest again.',
-    });
+
+  const filePath = path.resolve(SHARE_STORE_DIR, `${id}.${ext}`);
+  if (!filePath.startsWith(SHARE_STORE_DIR) || !fs.existsSync(filePath)) {
+    res.status(404).json({ error: 'Shared portrait not found.' });
     return;
   }
-  res.status(502).json({
-    error: 'Unable to generate retouch suggestions right now. Please try again.',
-  });
+
+  const contentType =
+    ext === 'jpg' ? 'image/jpeg' : ext === 'webp' ? 'image/webp' : 'image/png';
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+  res.setHeader('Content-Disposition', `inline; filename="sable-studio-${id}.${ext}"`);
+  res.sendFile(filePath);
+});
+
+app.get('/share/:id', (req, res) => {
+  const { id } = req.params;
+  if (!SHARE_ID_PATTERN.test(id)) {
+    res.status(404).send('Portrait not found.');
+    return;
+  }
+
+  const metaPath = path.resolve(SHARE_STORE_DIR, `${id}.json`);
+  if (!metaPath.startsWith(SHARE_STORE_DIR) || !fs.existsSync(metaPath)) {
+    res.status(404).send('Portrait not found.');
+    return;
+  }
+
+  try {
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as StoredShareMeta;
+    const origin = resolveRequestOrigin(req);
+    const imageUrl = `${origin}/api/shares/${meta.id}/image.${meta.ext}`;
+    const pageUrl = `${origin}/share/${meta.id}`;
+    const paddedFrame = String(meta.frameNumber).padStart(2, '0');
+    const title = `Sable Studio — Frame ${paddedFrame} · ${meta.styleName}`;
+    const description = `${meta.styleName} portrait developed with ${meta.lightingLabel} lighting and ${meta.framingLabel} framing (${meta.aspectRatio}).`;
+
+    const html = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${escapeHtml(title)}</title>
+    <meta name="description" content="${escapeHtml(description)}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="${escapeHtml(title)}" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:image" content="${escapeHtml(imageUrl)}" />
+    <meta property="og:url" content="${escapeHtml(pageUrl)}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${escapeHtml(title)}" />
+    <meta name="twitter:description" content="${escapeHtml(description)}" />
+    <meta name="twitter:image" content="${escapeHtml(imageUrl)}" />
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #0B0B0C;
+        color: #F5F1E8;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 32px 20px;
+      }
+      .shell {
+        width: 100%;
+        max-width: 720px;
+        border: 1px solid rgba(255,255,255,0.1);
+        background: #141416;
+        border-radius: 14px;
+        padding: 24px;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: #D4A853;
+        margin: 0 0 6px 0;
+      }
+      h1 {
+        font-family: Georgia, "Times New Roman", serif;
+        font-weight: 500;
+        font-size: 28px;
+        margin: 0 0 8px 0;
+        color: #F5F1E8;
+      }
+      .meta {
+        font-size: 13px;
+        color: #9B968C;
+        margin: 0 0 20px 0;
+      }
+      .frame {
+        background: #0B0B0C;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 10px;
+        overflow: hidden;
+        display: flex;
+        justify-content: center;
+      }
+      .frame img {
+        display: block;
+        max-width: 100%;
+        max-height: 70vh;
+        height: auto;
+        object-fit: contain;
+      }
+      .actions {
+        margin-top: 20px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 16px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+      .btn-primary {
+        background: #F5F1E8;
+        color: #0B0B0C;
+      }
+      .btn-secondary {
+        border: 1px solid rgba(255,255,255,0.14);
+        color: #F5F1E8;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <p class="eyebrow">Sable Studio · Frame ${escapeHtml(paddedFrame)}</p>
+      <h1>${escapeHtml(meta.styleName)}</h1>
+      <p class="meta">${escapeHtml(meta.lightingLabel)} · ${escapeHtml(meta.framingLabel)} · ${escapeHtml(meta.aspectRatio)}</p>
+      <div class="frame">
+        <img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(title)}" />
+      </div>
+      <div class="actions">
+        <a class="btn btn-primary" href="${escapeHtml(imageUrl)}" download="sable-studio-frame-${escapeHtml(paddedFrame)}.${escapeHtml(meta.ext)}">Download High-Res Image</a>
+        <a class="btn btn-secondary" href="${escapeHtml(origin)}/">Open Sable Studio</a>
+      </div>
+    </main>
+  </body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(html);
+  } catch {
+    res.status(500).send('Unable to load shared portrait.');
+  }
 });
 
 async function startServer() {

@@ -31,6 +31,12 @@ export type AdvancedLightingPresetId =
 
 export type SubjectProfileId = 'androgynous' | 'masculine' | 'feminine';
 
+export type StudioMoodId =
+  | 'cinematic-editorial'
+  | 'boardroom-authority'
+  | 'silver-noir'
+  | 'sunlit-modernist';
+
 export type AspectRatioOption = '3:4' | '1:1' | '4:3';
 
 export interface DarkroomRecipe {
@@ -109,6 +115,24 @@ export interface StudioControlOption<T extends string> {
   id: T;
   label: string;
   shortSpec: string;
+}
+
+export interface StudioMoodPreset {
+  id: StudioMoodId;
+  name: string;
+  shortLabel: string;
+  aestheticCue: string;
+  description: string;
+  imageUrl: string;
+  objectPositionClass: string;
+  direction: {
+    styleId: StyleId;
+    attireId: AttireId;
+    framingId: FramingId;
+    lightingId: LightingId;
+    advancedLightingPreset: AdvancedLightingPresetId;
+    backdropBlur: number;
+  };
 }
 
 export interface SourcePortrait {
@@ -428,6 +452,81 @@ export const SUBJECT_PROFILE_OPTIONS: SubjectProfileOption[] = [
   },
 ];
 
+export const STUDIO_MOOD_PRESETS: StudioMoodPreset[] = [
+  {
+    id: 'cinematic-editorial',
+    name: 'Cinematic Editorial',
+    shortLabel: 'Cinematic',
+    aestheticCue: 'Walnut Lounge · Multi-Soft Rig',
+    description:
+      'Warm 45° key, cool silk bounce fill, and dual rim separation against architectural walnut depth.',
+    imageUrl: '/src/assets/images/mood_cinematic_editorial_1795178995944.jpg',
+    objectPositionClass: 'object-[50%_18%]',
+    direction: {
+      styleId: 'executive-lounge',
+      attireId: 'black-turtleneck',
+      framingId: 'head-shoulders',
+      lightingId: 'professional-cinematic',
+      advancedLightingPreset: 'professional-cinematic',
+      backdropBlur: 9,
+    },
+  },
+  {
+    id: 'boardroom-authority',
+    name: 'Boardroom Authority',
+    shortLabel: 'Boardroom',
+    aestheticCue: 'Slate Seamless · Softbox Key',
+    description:
+      'Crisp 85mm executive clarity on medium-slate paper with tailored charcoal tone and clean fill.',
+    imageUrl: '/src/assets/images/mood_boardroom_authority_1795178994377.jpg',
+    objectPositionClass: 'object-[50%_18%]',
+    direction: {
+      styleId: 'corporate-grey',
+      attireId: 'charcoal-blazer',
+      framingId: 'head-shoulders',
+      lightingId: 'softbox-key',
+      advancedLightingPreset: 'none',
+      backdropBlur: 4,
+    },
+  },
+  {
+    id: 'silver-noir',
+    name: 'Silver-Gelatin Noir',
+    shortLabel: 'Silver Noir',
+    aestheticCue: 'Monochrome · Rembrandt Key',
+    description:
+      'High-contrast fine-art black and white with sculpted Rembrandt shadows and subtle film grain.',
+    imageUrl: '/src/assets/images/mood_silver_noir_1795178995207.jpg',
+    objectPositionClass: 'object-[50%_20%]',
+    direction: {
+      styleId: 'editorial-mono',
+      attireId: 'black-turtleneck',
+      framingId: 'tight-headshot',
+      lightingId: 'rembrandt',
+      advancedLightingPreset: 'noir-high-contrast',
+      backdropBlur: 3,
+    },
+  },
+  {
+    id: 'sunlit-modernist',
+    name: 'Sunlit Modernist',
+    shortLabel: 'Sunlit',
+    aestheticCue: 'Travertine · Diffused Daylight',
+    description:
+      'Airy architectural daylight with soft window diffusion, crisp ivory wardrobe, and open gallery depth.',
+    imageUrl: '/src/assets/images/mood_sunlit_modernist_1795178993050.jpg',
+    objectPositionClass: 'object-[50%_28%]',
+    direction: {
+      styleId: 'architectural-daylight',
+      attireId: 'crisp-oxford',
+      framingId: 'mid-chest',
+      lightingId: 'diffused-window',
+      advancedLightingPreset: 'soft-diffused',
+      backdropBlur: 8,
+    },
+  },
+];
+
 export const ASPECT_RATIO_OPTIONS: { id: AspectRatioOption; label: string; useCase: string }[] = [
   { id: '3:4', label: '3:4 Portrait', useCase: 'Press & Bio' },
   { id: '1:1', label: '1:1 Square', useCase: 'LinkedIn & Avatar' },
@@ -684,3 +783,122 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
   const withSubjectBias = applySubjectProfileBias(baseRecipe, config.subjectProfile);
   return applyAdvancedLightingPreset(withSubjectBias, config.advancedLightingPreset);
 }
+
+/**
+ * Generates 4 context-aware, executable darkroom retouching suggestions directly from
+ * the active portrait's recipe without requiring any external or paid API key.
+ */
+export function buildContextualRetouchSuggestions(
+  recipe: Partial<DarkroomRecipe> | undefined,
+  previousSuggestions: string[] = [],
+  lastRetouchPrompt?: string
+): string[] {
+  const safeStyleId = getStyleById(recipe?.styleId ?? 'corporate-grey').id;
+  const safeAttireId = getAttireById(recipe?.attireId ?? 'keep-original').id;
+  const safeFramingId = getFramingById(recipe?.framingId ?? 'head-shoulders').id;
+  const safeLightingId = getLightingById(recipe?.lightingId ?? 'softbox-key').id;
+  const safeAdvancedPreset = getAdvancedLightingPresetById(recipe?.advancedLightingPreset).id;
+
+  const exposure = typeof recipe?.exposure === 'number' ? recipe.exposure : 0.04;
+  const contrast = typeof recipe?.contrast === 'number' ? recipe.contrast : 0.1;
+  const warmth = typeof recipe?.warmth === 'number' ? recipe.warmth : 0;
+  const monochrome = Boolean(recipe?.monochrome);
+  const backdropBlur = typeof recipe?.backdropBlur === 'number' ? recipe.backdropBlur : 6;
+  const rimLight = typeof recipe?.rimLight === 'number' ? recipe.rimLight : 0.45;
+  const sharpen = typeof recipe?.sharpen === 'number' ? recipe.sharpen : 0;
+
+  const candidates: string[] = [];
+
+  // 1. Lighting & Tonal Corrections tailored to current recipe
+  if (exposure < 0.05) {
+    candidates.push('Brighten facial exposure and lift midtones');
+  } else if (exposure > 0.12 && safeLightingId !== 'rembrandt') {
+    candidates.push('Add dramatic Rembrandt shadow contrast');
+  }
+
+  if (
+    safeLightingId !== 'professional-cinematic' &&
+    safeAdvancedPreset !== 'professional-cinematic'
+  ) {
+    candidates.push('Apply Professional Cinematic multi-soft lighting');
+  }
+
+  if (contrast > 0.14 || sharpen > 0.15) {
+    candidates.push('Soften skin texture and shadow rolloff');
+  }
+
+  if (backdropBlur < 11) {
+    candidates.push('Increase background depth and creamy bokeh');
+  }
+
+  if (!monochrome) {
+    if (warmth < 0.05 || rimLight < 0.55) {
+      candidates.push('Add warm golden hour rim separation');
+    }
+    if (warmth >= 0.03) {
+      candidates.push('Shift to crisp cool architectural balance');
+    }
+    candidates.push('Convert to dramatic silver-gelatin monochrome');
+  } else {
+    candidates.push('Restore natural studio color balance');
+    candidates.push('Deepen moody high-contrast shadows');
+  }
+
+  // 2. Framing Adjustments complementary to current crop
+  if (safeFramingId !== 'tight-headshot') {
+    candidates.push('Tighten crop to 85mm close-up headshot');
+  }
+  if (safeFramingId !== 'mid-chest') {
+    candidates.push('Zoom out to wider mid-chest editorial');
+  }
+
+  // 3. Curated Backdrop Swaps (excluding current backdrop)
+  const backdropCues: Array<{ id: StyleId; cue: string }> = [
+    { id: 'modern-tech', cue: 'Switch backdrop to Modern Tech Office' },
+    { id: 'outdoor-natural', cue: 'Switch backdrop to Outdoor Natural Light' },
+    { id: 'executive-lounge', cue: 'Switch backdrop to Executive Warm Lounge' },
+    { id: 'architectural-daylight', cue: 'Switch backdrop to Architectural Daylight gallery' },
+    { id: 'corporate-grey', cue: 'Switch backdrop to Corporate Grey studio' },
+  ];
+  for (const item of backdropCues) {
+    if (item.id !== safeStyleId) {
+      candidates.push(item.cue);
+    }
+  }
+
+  // 4. Wardrobe Tone Adjustments (excluding current tone)
+  const attireCues: Array<{ id: AttireId; cue: string }> = [
+    { id: 'charcoal-blazer', cue: 'Shift wardrobe tone to charcoal blazer' },
+    { id: 'smart-knit', cue: 'Shift wardrobe tone to executive navy' },
+    { id: 'crisp-oxford', cue: 'Shift wardrobe tone to crisp ivory shirt' },
+    { id: 'black-turtleneck', cue: 'Shift wardrobe tone to obsidian turtleneck' },
+  ];
+  for (const item of attireCues) {
+    if (item.id !== safeAttireId) {
+      candidates.push(item.cue);
+    }
+  }
+
+  // Deduplicate while preserving priority order
+  const uniqueCandidates = Array.from(new Set(candidates));
+
+  const seenSet = new Set(
+    [
+      ...previousSuggestions,
+      ...(typeof lastRetouchPrompt === 'string' && lastRetouchPrompt.trim()
+        ? [lastRetouchPrompt]
+        : []),
+    ].map((s) => s.trim().toLowerCase())
+  );
+
+  // Prioritize fresh suggestions not shown in the previous click
+  const fresh = uniqueCandidates.filter((item) => !seenSet.has(item.toLowerCase()));
+  if (fresh.length >= 4) {
+    return fresh.slice(0, 4);
+  }
+
+  // If the user has cycled through most of the pool, combine remaining fresh + earlier pool cleanly
+  const recycled = uniqueCandidates.filter((item) => seenSet.has(item.toLowerCase()));
+  return [...fresh, ...recycled].slice(0, 4);
+}
+

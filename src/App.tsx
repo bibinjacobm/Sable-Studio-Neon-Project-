@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, History, SlidersHorizontal, X } from 'lucide-react';
 import {
   applyAdvancedLightingPreset,
+  buildContextualRetouchSuggestions,
   buildDefaultRecipe,
   getAdvancedLightingPresetById,
   getAttireById,
@@ -21,6 +22,7 @@ import {
   type SelfieCritique,
   type SourcePortrait,
   type StudioDirectionConfig,
+  type StudioMoodPreset,
   type StyleId,
   type SubjectProfileId,
 } from './data/studioCatalog';
@@ -77,6 +79,8 @@ export default function App() {
   // Cache on-device neural segmentation per uploaded selfie so retouches and style changes render instantaneously
   const maskCacheRef = useRef<{ sourceDataUrl: string; masks: SegmentationMasks } | null>(null);
 
+  const [sessionStartedAt] = useState<number>(() => Date.now());
+  const [totalGeneratedCount, setTotalGeneratedCount] = useState<number>(0);
   const [sourcePortrait, setSourcePortrait] = useState<SourcePortrait | null>(null);
   const [config, setConfig] = useState<StudioDirectionConfig>(INITIAL_CONFIG);
   const [takes, setTakes] = useState<GeneratedTake[]>([]);
@@ -348,6 +352,7 @@ export default function App() {
       };
 
       setTakes((prev) => [newTake, ...prev]);
+      setTotalGeneratedCount((prev) => prev + 1);
       setActiveTakeId(newTake.id);
       setSliderPosition(50);
     } catch (err) {
@@ -441,6 +446,7 @@ export default function App() {
       };
 
       setTakes((prev) => [newTake, ...prev]);
+      setTotalGeneratedCount((prev) => prev + 1);
       setActiveTakeId(newTake.id);
       setSliderPosition(50);
       setRetouchPrompt('');
@@ -585,6 +591,7 @@ export default function App() {
 
       const newestTake = createdTakes[createdTakes.length - 1];
       setTakes((prev) => [...[...createdTakes].reverse(), ...prev]);
+      setTotalGeneratedCount((prev) => prev + createdTakes.length);
       setActiveTakeId(newestTake.id);
       setSliderPosition(50);
       setConfig((prev) => ({
@@ -628,10 +635,9 @@ export default function App() {
     setSuggestRetouchError(null);
     setIsSuggestingRetouches(true);
     try {
-      const response = await fetch('/api/headshots/suggest-retouches', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const payload = await safePostJson<{ suggestions?: string[] }>(
+        '/api/headshots/suggest-retouches',
+        {
           styleName: activeTake.styleName,
           attireLabel: activeTake.attireLabel,
           framingLabel: activeTake.framingLabel,
@@ -641,41 +647,32 @@ export default function App() {
           retouchPrompt: activeTake.retouchPrompt,
           directorNote: activeTake.directorNote,
           previousSuggestions,
-        }),
-      });
+        }
+      );
 
-      const contentType = response.headers.get('content-type') ?? '';
-      if (!contentType.toLowerCase().includes('application/json')) {
-        throw new Error(
-          'AI Auto-Suggest requires the studio server API and is unavailable in static-only preview.'
-        );
-      }
-
-      const payload = (await response.json()) as {
-        suggestions?: string[];
-        error?: string;
-      };
-
-      if (!response.ok) {
-        throw new Error(
-          payload.error || 'Unable to generate retouching suggestions right now.'
-        );
-      }
-
-      if (!Array.isArray(payload.suggestions) || payload.suggestions.length === 0) {
-        throw new Error('No retouching suggestions were returned. Try again.');
-      }
+      const resolvedSuggestions =
+        payload && Array.isArray(payload.suggestions) && payload.suggestions.length > 0
+          ? payload.suggestions
+          : buildContextualRetouchSuggestions(
+              activeTake.recipe,
+              previousSuggestions,
+              activeTake.retouchPrompt
+            );
 
       setAutoSuggestionsByTakeId((prev) => ({
         ...prev,
-        [targetTakeId]: payload.suggestions!,
+        [targetTakeId]: resolvedSuggestions,
       }));
-    } catch (err) {
-      setSuggestRetouchError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to generate retouching suggestions right now.'
+    } catch {
+      const fallback = buildContextualRetouchSuggestions(
+        activeTake.recipe,
+        previousSuggestions,
+        activeTake.retouchPrompt
       );
+      setAutoSuggestionsByTakeId((prev) => ({
+        ...prev,
+        [targetTakeId]: fallback,
+      }));
     } finally {
       setIsSuggestingRetouches(false);
     }
@@ -1078,6 +1075,9 @@ export default function App() {
                 <HistoryViewPanel
                   takes={takes}
                   activeTakeId={activeTakeId}
+                  currentStyleId={config.styleId}
+                  sessionStartedAt={sessionStartedAt}
+                  totalGeneratedCount={totalGeneratedCount}
                   hasSourcePortrait={Boolean(sourcePortrait)}
                   onSelectTake={handleSelectTake}
                   onInspectTake={handleInspectTake}
@@ -1136,6 +1136,17 @@ export default function App() {
                   }
                   onExtraNotesChange={(extraNotes: string) =>
                     setConfig((prev) => ({ ...prev, extraNotes }))
+                  }
+                  onApplyMood={(mood: StudioMoodPreset) =>
+                    setConfig((prev) => ({
+                      ...prev,
+                      styleId: mood.direction.styleId,
+                      attireId: mood.direction.attireId,
+                      framingId: prev.smartCrop ? prev.framingId : mood.direction.framingId,
+                      lightingId: mood.direction.lightingId,
+                      advancedLightingPreset: mood.direction.advancedLightingPreset,
+                      backdropBlur: mood.direction.backdropBlur,
+                    }))
                   }
                   onApplyCritique={handleApplyCritique}
                   onGenerate={() => void handleGenerateHeadshot()}

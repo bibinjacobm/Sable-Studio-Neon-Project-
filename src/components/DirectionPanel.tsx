@@ -6,6 +6,7 @@ import {
   ATTIRE_OPTIONS,
   FRAMING_OPTIONS,
   LIGHTING_OPTIONS,
+  STUDIO_MOOD_PRESETS,
   STUDIO_STYLES,
   SUBJECT_PROFILE_OPTIONS,
   formatApertureFromBlur,
@@ -24,6 +25,7 @@ import {
   type SmartCropSuggestion,
   type SourcePortrait,
   type StudioDirectionConfig,
+  type StudioMoodPreset,
   type StyleId,
   type SubjectProfileId,
 } from '../data/studioCatalog';
@@ -46,6 +48,7 @@ interface DirectionPanelProps {
   onBackdropBlurChange: (blurPx: number) => void;
   onAspectRatioSelect: (ratio: AspectRatioOption) => void;
   onExtraNotesChange: (notes: string) => void;
+  onApplyMood: (mood: StudioMoodPreset) => void;
   onApplyCritique: () => void;
   onGenerate: () => void;
   onUploadClick: () => void;
@@ -193,17 +196,32 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   onBackdropBlurChange,
   onAspectRatioSelect,
   onExtraNotesChange,
+  onApplyMood,
   onApplyCritique,
   onGenerate,
   onUploadClick,
 }) => {
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [hoveredMoodId, setHoveredMoodId] = useState<string | null>(null);
   const selectedStyle = getStyleById(config.styleId);
   const defaultStyleBlur = selectedStyle.defaultRecipe.backdropBlur ?? 6;
   const roundedBlur = Math.max(0, Math.min(20, Math.round(config.backdropBlur)));
   const apertureLabel = formatApertureFromBlur(roundedBlur);
   const selectedAdvancedPreset = getAdvancedLightingPresetById(config.advancedLightingPreset);
   const selectedSubjectProfile = getSubjectProfileById(config.subjectProfile);
+
+  const activeMood =
+    STUDIO_MOOD_PRESETS.find(
+      (mood) =>
+        mood.direction.styleId === config.styleId &&
+        mood.direction.lightingId === config.lightingId &&
+        mood.direction.advancedLightingPreset === config.advancedLightingPreset
+    ) ?? null;
+
+  const inspectedMood =
+    (hoveredMoodId ? STUDIO_MOOD_PRESETS.find((m) => m.id === hoveredMoodId) : null) ??
+    activeMood ??
+    STUDIO_MOOD_PRESETS[0];
 
   return (
     <div className="flex flex-col gap-6">
@@ -258,8 +276,150 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
         </div>
       )}
 
+      {/* Studio Mood Visual Reference Collage */}
+      <section aria-label="Studio Mood aesthetic reference collage">
+        <div className="mb-2.5 flex items-baseline justify-between gap-2">
+          <h3 className="text-xs font-semibold text-[#F5F1E8] whitespace-nowrap">Studio Mood</h3>
+          <span className="truncate text-[11px] text-[#9B968C]">
+            {activeMood ? activeMood.name : 'Visual aesthetic presets'}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-12 gap-2">
+          {/* Dominant Left Editorial Plate (Cinematic Editorial) */}
+          {(() => {
+            const leadMood = STUDIO_MOOD_PRESETS[0];
+            const isMatched = activeMood?.id === leadMood.id;
+            const failed = failedImages[`mood-${leadMood.id}`];
+            return (
+              <button
+                type="button"
+                onClick={() => onApplyMood(leadMood)}
+                onMouseEnter={() => setHoveredMoodId(leadMood.id)}
+                onMouseLeave={() => setHoveredMoodId(null)}
+                onFocus={() => setHoveredMoodId(leadMood.id)}
+                onBlur={() => setHoveredMoodId(null)}
+                aria-pressed={isMatched}
+                aria-label={`Apply ${leadMood.name} studio mood (${leadMood.aestheticCue})`}
+                className={`group/mood relative col-span-5 h-[206px] overflow-hidden rounded-lg border text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                  isMatched
+                    ? 'border-[#D4A853] ring-1 ring-[#D4A853]/50'
+                    : 'border-white/[0.08] hover:border-white/25'
+                }`}
+              >
+                {!failed ? (
+                  <img
+                    src={leadMood.imageUrl}
+                    alt={`${leadMood.name} portrait aesthetic reference`}
+                    referrerPolicy="no-referrer"
+                    onError={() =>
+                      setFailedImages((prev) => ({ ...prev, [`mood-${leadMood.id}`]: true }))
+                    }
+                    className={`h-full w-full object-cover ${leadMood.objectPositionClass} transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/mood:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover/mood:scale-100`}
+                  />
+                ) : (
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-[#1C1C1F] px-2 text-center text-[#9B968C]">
+                    <Camera className="h-4 w-4" aria-hidden="true" />
+                    <span className="text-[10px]">{leadMood.shortLabel}</span>
+                  </div>
+                )}
+
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/45 to-transparent px-2.5 pt-7 pb-2">
+                  <p className="truncate text-[11px] font-semibold leading-tight text-[#F5F1E8]">
+                    {leadMood.name}
+                  </p>
+                  <p className="mt-0.5 truncate text-[10px] text-[#D4A853]/90">
+                    {leadMood.aestheticCue}
+                  </p>
+                </div>
+
+                {isMatched && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute top-2 right-2 flex h-4 w-4 items-center justify-center rounded-full bg-[#D4A853] text-[#0B0B0C]"
+                  >
+                    <Check className="h-2.5 w-2.5 stroke-[3]" />
+                  </span>
+                )}
+              </button>
+            );
+          })()}
+
+          {/* Right Collage Mosaic: 2 Upper Portraits + 1 Lower Wide Architectural Frame */}
+          <div className="col-span-7 grid grid-cols-2 gap-2">
+            {STUDIO_MOOD_PRESETS.slice(1).map((mood, idx) => {
+              const isWideBottom = idx === 2;
+              const isMatched = activeMood?.id === mood.id;
+              const failed = failedImages[`mood-${mood.id}`];
+              return (
+                <button
+                  key={mood.id}
+                  type="button"
+                  onClick={() => onApplyMood(mood)}
+                  onMouseEnter={() => setHoveredMoodId(mood.id)}
+                  onMouseLeave={() => setHoveredMoodId(null)}
+                  onFocus={() => setHoveredMoodId(mood.id)}
+                  onBlur={() => setHoveredMoodId(null)}
+                  aria-pressed={isMatched}
+                  aria-label={`Apply ${mood.name} studio mood (${mood.aestheticCue})`}
+                  className={`group/mood relative overflow-hidden rounded-lg border text-left transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                    isWideBottom ? 'col-span-2 h-[99px]' : 'h-[99px]'
+                  } ${
+                    isMatched
+                      ? 'border-[#D4A853] ring-1 ring-[#D4A853]/50'
+                      : 'border-white/[0.08] hover:border-white/25'
+                  }`}
+                >
+                  {!failed ? (
+                    <img
+                      src={mood.imageUrl}
+                      alt={`${mood.name} portrait aesthetic reference`}
+                      referrerPolicy="no-referrer"
+                      onError={() =>
+                        setFailedImages((prev) => ({ ...prev, [`mood-${mood.id}`]: true }))
+                      }
+                      className={`h-full w-full object-cover ${mood.objectPositionClass} transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover/mood:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover/mood:scale-100`}
+                    />
+                  ) : (
+                    <div className="flex h-full w-full flex-col items-center justify-center gap-1 bg-[#1C1C1F] px-2 text-center text-[#9B968C]">
+                      <Camera className="h-4 w-4" aria-hidden="true" />
+                      <span className="text-[10px]">{mood.shortLabel}</span>
+                    </div>
+                  )}
+
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/45 to-transparent px-2 pt-5 pb-1.5">
+                    <p className="truncate text-[11px] font-semibold leading-tight text-[#F5F1E8]">
+                      {isWideBottom ? mood.name : mood.shortLabel}
+                    </p>
+                    {isWideBottom && (
+                      <p className="mt-0.5 truncate text-[10px] text-[#D4A853]/90">
+                        {mood.aestheticCue}
+                      </p>
+                    )}
+                  </div>
+
+                  {isMatched && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute top-1.5 right-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[#D4A853] text-[#0B0B0C]"
+                    >
+                      <Check className="h-2.5 w-2.5 stroke-[3]" />
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <p className="mt-2 text-[11px] leading-relaxed text-[#9B968C]">
+          <span className="font-medium text-[#F5F1E8]">{inspectedMood.name}</span>{' '}
+          <span aria-hidden="true">·</span> {inspectedMood.description}
+        </p>
+      </section>
+
       {/* 01. Backdrop & Style Lookbook Grid */}
-      <div>
+      <div className="border-t border-white/[0.07] pt-5">
         <div className="mb-3 flex items-baseline justify-between gap-2">
           <h3 className="text-xs font-semibold text-[#F5F1E8]">01. Backdrop & Style</h3>
           <span className="text-xs text-[#9B968C]">{getStyleById(config.styleId).name}</span>

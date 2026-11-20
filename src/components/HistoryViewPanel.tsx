@@ -15,12 +15,13 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { GeneratedTake } from '../data/studioCatalog';
+import type { GeneratedTake, StyleId } from '../data/studioCatalog';
 import {
   downloadAllPortraitsZip,
   downloadBatchPortraitsZip,
 } from '../utils/imageProcessing';
 import { exportPortfolioPdf } from '../utils/portfolioPdf';
+import { SessionMetadataPanel } from './SessionMetadataPanel';
 import { SessionTimeline } from './SessionTimeline';
 
 type HistoryFilter = 'all' | 'retouched';
@@ -29,6 +30,9 @@ type HistorySortOrder = 'newest' | 'oldest';
 interface HistoryViewPanelProps {
   takes: GeneratedTake[];
   activeTakeId: string | null;
+  currentStyleId: StyleId;
+  sessionStartedAt: number;
+  totalGeneratedCount: number;
   hasSourcePortrait: boolean;
   onSelectTake: (id: string) => void;
   onInspectTake: (id: string) => void;
@@ -52,6 +56,9 @@ function formatTakeTime(timestamp: number): string {
 export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   takes,
   activeTakeId,
+  currentStyleId,
+  sessionStartedAt,
+  totalGeneratedCount,
   hasSourcePortrait,
   onSelectTake,
   onInspectTake,
@@ -332,6 +339,18 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
           </p>
         )}
       </div>
+
+      {/* Dedicated Session Metadata Sub-Panel (Session Time, Takes Generated & Active Style Usage) */}
+      {!isBatchMode && (
+        <SessionMetadataPanel
+          takes={takes}
+          activeTakeId={activeTakeId}
+          currentStyleId={currentStyleId}
+          sessionStartedAt={sessionStartedAt}
+          totalGeneratedCount={totalGeneratedCount}
+          onSelectTake={onSelectTake}
+        />
+      )}
 
       {takes.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-lg border border-dashed border-white/[0.1] bg-[#0B0B0C]/60 px-6 py-12 text-center">
