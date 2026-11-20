@@ -107,6 +107,7 @@ export interface GeneratedTake {
   frameNumber: number;
   imageUrl: string;
   sourceImageUrl: string;
+  alignedSourceUrl?: string;
   styleId: StyleId;
   styleName: string;
   attireLabel: string;

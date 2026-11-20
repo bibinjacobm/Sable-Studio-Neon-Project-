@@ -31,6 +31,12 @@ import {
   segmentSelfie,
   type SegmentationMasks,
 } from './utils/darkroomEngine';
+import {
+  analyzeSelfieLocally,
+  applyRetouchLocally,
+  planFramingLocally,
+  safePostJson,
+} from './utils/localDarkroomAi';
 
 const INITIAL_CONFIG: StudioDirectionConfig = {
   styleId: 'corporate-grey',
@@ -57,7 +63,7 @@ export default function App() {
   const [takes, setTakes] = useState<GeneratedTake[]>([]);
   const [activeTakeId, setActiveTakeId] = useState<string | null>(null);
 
-  const [compareMode, setCompareMode] = useState<CompareViewMode>('split');
+  const [compareMode, setCompareMode] = useState<CompareViewMode>('after');
   const [sliderPosition, setSliderPosition] = useState<number>(50);
   const [retouchPrompt, setRetouchPrompt] = useState<string>('');
   const [critique, setCritique] = useState<SelfieCritique | null>(null);
@@ -136,19 +142,16 @@ export default function App() {
     setErrorMessage(null);
     setIsAnalyzing(true);
     try {
-      const response = await fetch('/api/headshots/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          sourceBase64: sourcePortrait.base64,
-          sourceMimeType: sourcePortrait.mimeType,
-        }),
+      const apiCritique = await safePostJson<SelfieCritique>('/api/headshots/analyze', {
+        sourceBase64: sourcePortrait.base64,
+        sourceMimeType: sourcePortrait.mimeType,
       });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Could not analyze the uploaded photograph.');
+      if (apiCritique) {
+        setCritique(apiCritique);
+      } else {
+        const localCritique = await analyzeSelfieLocally(sourcePortrait.dataUrl);
+        setCritique(localCritique);
       }
-      setCritique(data as SelfieCritique);
     } catch (err) {
       setErrorMessage(
         err instanceof Error ? err.message : 'Lighting analysis failed. Please try again.'
@@ -194,40 +197,41 @@ export default function App() {
     try {
       setGenerationPhase('Calibrating facial framing & light');
 
+      const planData = await safePostJson<{
+        anchor?: FramingAnchor;
+        recipe?: DarkroomRecipe;
+        directorNote?: string;
+      }>('/api/headshots/plan', {
+        sourceBase64: sourcePortrait.base64,
+        sourceMimeType: sourcePortrait.mimeType,
+        styleId: config.styleId,
+        attireId: config.attireId,
+        framingId: config.framingId,
+        lightingId: config.lightingId,
+        aspectRatio: config.aspectRatio,
+        extraNotes: config.extraNotes,
+      });
+
       let anchor: FramingAnchor = DEFAULT_ANCHOR;
       let recipe: DarkroomRecipe = buildDefaultRecipe(config);
       let directorNote: string | undefined;
 
-      try {
-        const planRes = await fetch('/api/headshots/plan', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            sourceBase64: sourcePortrait.base64,
-            sourceMimeType: sourcePortrait.mimeType,
-            styleId: config.styleId,
-            attireId: config.attireId,
-            framingId: config.framingId,
-            lightingId: config.lightingId,
-            aspectRatio: config.aspectRatio,
-            extraNotes: config.extraNotes,
-          }),
-        });
-        if (planRes.ok) {
-          const planData = await planRes.json();
-          if (planData.anchor) anchor = planData.anchor as FramingAnchor;
-          if (planData.recipe) recipe = planData.recipe as DarkroomRecipe;
-          if (planData.directorNote) directorNote = String(planData.directorNote);
-        }
-      } catch {
-        // Proceed smoothly with local calibration
+      if (planData?.anchor && planData?.recipe) {
+        anchor = planData.anchor;
+        recipe = planData.recipe;
+        directorNote = planData.directorNote;
+      } else {
+        const localPlan = await planFramingLocally(sourcePortrait.dataUrl, config);
+        anchor = localPlan.anchor;
+        recipe = localPlan.recipe;
+        directorNote = localPlan.directorNote;
       }
 
       setGenerationPhase('Isolating portrait silhouette');
       const masks = await getOrComputeMasks(sourcePortrait.dataUrl, anchor);
 
       setGenerationPhase('Relighting & developing studio plate');
-      const imageUrl = await renderStudioHeadshot(
+      const { imageUrl, alignedSourceUrl } = await renderStudioHeadshot(
         sourcePortrait.dataUrl,
         masks,
         recipe,
@@ -240,6 +244,7 @@ export default function App() {
         frameNumber: frameCounterRef.current,
         imageUrl,
         sourceImageUrl: sourcePortrait.dataUrl,
+        alignedSourceUrl,
         styleId: recipe.styleId,
         styleName: getStyleById(recipe.styleId).name,
         attireLabel: getAttireById(recipe.attireId).label,
@@ -254,7 +259,7 @@ export default function App() {
 
       setTakes((prev) => [newTake, ...prev]);
       setActiveTakeId(newTake.id);
-      setCompareMode('split');
+      setCompareMode('after');
       setSliderPosition(50);
     } catch (err) {
       setErrorMessage(
@@ -276,27 +281,27 @@ export default function App() {
 
     try {
       setGenerationPhase('Interpreting darkroom retouching note');
-      const res = await fetch('/api/headshots/retouch-recipe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          retouchPrompt: promptText,
-          currentRecipe: activeTake.recipe,
-        }),
+      const apiRetouch = await safePostJson<{
+        recipe?: DarkroomRecipe;
+        directorNote?: string;
+      }>('/api/headshots/retouch-recipe', {
+        retouchPrompt: promptText,
+        currentRecipe: activeTake.recipe,
       });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Could not interpret retouching instruction.');
-      }
 
-      const nextRecipe: DarkroomRecipe = data.recipe as DarkroomRecipe;
-      const directorNote: string | undefined = data.directorNote
-        ? String(data.directorNote)
+      const resolved =
+        apiRetouch?.recipe
+          ? { recipe: apiRetouch.recipe, directorNote: apiRetouch.directorNote }
+          : applyRetouchLocally(promptText, activeTake.recipe);
+
+      const nextRecipe: DarkroomRecipe = resolved.recipe;
+      const directorNote: string | undefined = resolved.directorNote
+        ? String(resolved.directorNote)
         : undefined;
 
       setGenerationPhase('Re-exposing studio plate');
       const masks = await getOrComputeMasks(activeTake.sourceImageUrl, activeTake.anchor);
-      const imageUrl = await renderStudioHeadshot(
+      const { imageUrl, alignedSourceUrl } = await renderStudioHeadshot(
         activeTake.sourceImageUrl,
         masks,
         nextRecipe,
@@ -318,6 +323,7 @@ export default function App() {
         frameNumber: frameCounterRef.current,
         imageUrl,
         sourceImageUrl: activeTake.sourceImageUrl,
+        alignedSourceUrl,
         styleId: nextRecipe.styleId,
         styleName: getStyleById(nextRecipe.styleId).name,
         attireLabel: getAttireById(nextRecipe.attireId).label,
@@ -333,7 +339,7 @@ export default function App() {
 
       setTakes((prev) => [newTake, ...prev]);
       setActiveTakeId(newTake.id);
-      setCompareMode('split');
+      setCompareMode('after');
       setSliderPosition(50);
       setRetouchPrompt('');
     } catch (err) {
@@ -489,7 +495,7 @@ export default function App() {
             setActiveTakeId(id);
             const found = takes.find((t) => t.id === id);
             if (found) {
-              setCompareMode('split');
+              setCompareMode('after');
               setConfig((prev) => ({
                 ...prev,
                 styleId: found.recipe.styleId,

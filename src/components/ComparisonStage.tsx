@@ -174,8 +174,8 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
             >
               {(
                 [
+                  { id: 'after', label: 'Final Portrait' },
                   { id: 'split', label: 'Split Compare' },
-                  { id: 'after', label: 'Final' },
                   { id: 'before', label: 'Original' },
                 ] as const
               ).map((tab) => (
@@ -269,11 +269,11 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
               canCompare && compareMode === 'split' ? 'cursor-ew-resize touch-none' : ''
             }`}
           >
-            {/* Base layer: Generated studio portrait (or original when 'before' mode) */}
+            {/* Base layer: Generated studio portrait (or pixel-aligned original when 'before' mode) */}
             <img
               src={
-                compareMode === 'before' && activeTake.sourceImageUrl
-                  ? activeTake.sourceImageUrl
+                compareMode === 'before'
+                  ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
                   : activeTake.imageUrl
               }
               alt={`${activeTake.styleName} studio headshot frame ${activeTake.frameNumber}`}
@@ -282,15 +282,15 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
               className="h-full w-full object-cover"
             />
 
-            {/* Clipped overlay layer: Original Selfie on left side in Split mode */}
-            {canCompare && compareMode === 'split' && activeTake.sourceImageUrl && (
+            {/* Clipped overlay layer: Pixel-aligned Original Selfie on left side ONLY in Split Compare mode */}
+            {canCompare && compareMode === 'split' && (
               <>
                 <div
                   className="pointer-events-none absolute inset-0 overflow-hidden"
                   style={{ clipPath: `inset(0 ${100 - sliderPosition}% 0 0)` }}
                 >
                   <img
-                    src={activeTake.sourceImageUrl}
+                    src={activeTake.alignedSourceUrl || activeTake.sourceImageUrl}
                     alt="Original uploaded selfie"
                     referrerPolicy="no-referrer"
                     draggable={false}
@@ -300,21 +300,26 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
 
                 {/* Brass Vertical Curtain Line & Tactile Handle */}
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-px bg-[#D4A853]"
+                  className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-[#D4A853] shadow-[0_0_12px_rgba(0,0,0,0.8)]"
                   style={{ left: `${sliderPosition}%` }}
                 >
-                  <div className="absolute top-1/2 left-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-[#D4A853] bg-[#0B0B0C]/90 text-[#F5F1E8] shadow-lg backdrop-blur-sm">
+                  <div className="absolute top-1/2 left-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#D4A853] bg-[#0B0B0C]/95 text-[#F5F1E8] shadow-lg">
                     <MoveHorizontal className="h-4 w-4 text-[#D4A853]" aria-hidden="true" />
                   </div>
                 </div>
 
-                {/* Measured Scrim Corner Labels */}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 via-black/30 to-transparent px-4 pt-8 pb-3 text-xs font-medium text-[#F5F1E8]">
-                  <span>Original Selfie</span>
+                {/* Top Corner Labels */}
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/75 via-black/30 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
+                  <span>Before · Original</span>
+                  <span>After · Studio</span>
+                </div>
+
+                {/* Bottom Scrim Drag Indicator */}
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 via-black/30 to-transparent px-4 pt-8 pb-3 text-xs text-[#F5F1E8]/90">
+                  <span>Drag divider to compare</span>
                   <span className="font-mono tabular-nums text-[#D4A853]">
                     {Math.round(sliderPosition)}% / {100 - Math.round(sliderPosition)}%
                   </span>
-                  <span>Studio Portrait</span>
                 </div>
               </>
             )}

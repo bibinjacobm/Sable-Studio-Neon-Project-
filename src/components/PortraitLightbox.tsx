@@ -33,7 +33,9 @@ export const PortraitLightbox: React.FC<PortraitLightboxProps> = ({
   if (!take) return null;
 
   const displayedSrc =
-    showOriginal && take.sourceImageUrl ? take.sourceImageUrl : take.imageUrl;
+    showOriginal && (take.alignedSourceUrl || take.sourceImageUrl)
+      ? take.alignedSourceUrl || take.sourceImageUrl
+      : take.imageUrl;
 
   return (
     <div
