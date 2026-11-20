@@ -1,0 +1,2 @@
+Sable Studio — AI Headshot Photographer
+Sable Studio is an editorial darkroom web application that transforms casual selfies into studio-grade professional headshots. The studio is completely free for end users—with zero paywalls, subscriptions, or user API key prompts—allowing anyone to upload a selfie, select a curated photographic style, dial in attire, framing, and lighting controls, inspect results with an interactive before-and-after curtain slider, and iteratively refine any portrait through natural-language retouching prompts.
