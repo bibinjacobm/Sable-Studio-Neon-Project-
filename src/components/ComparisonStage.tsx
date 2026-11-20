@@ -12,7 +12,10 @@ import {
 } from 'lucide-react';
 import {
   getStyleById,
+  type AdvancedLightingPresetId,
+  type FramingAnchor,
   type GeneratedTake,
+  type LightingId,
   type SelfieCritique,
   type SourcePortrait,
   type StudioStylePreset,
@@ -31,6 +34,9 @@ interface ComparisonStageProps {
   activeTake: GeneratedTake | null;
   selectedStyle: StudioStylePreset;
   critique: SelfieCritique | null;
+  detectedAnchor: FramingAnchor | null;
+  currentLightingId: LightingId;
+  currentAdvancedLightingPreset: AdvancedLightingPresetId;
   compareMode: CompareViewMode;
   sliderPosition: number;
   isGenerating: boolean;
@@ -45,6 +51,10 @@ interface ComparisonStageProps {
   onFileSelected: (file: File) => void;
   onOpenFilePicker: () => void;
   onAnalyzeSelfie: () => void;
+  onApplyRecommendedLighting: (
+    lightingId: LightingId,
+    advancedPreset: AdvancedLightingPresetId
+  ) => void;
   onInspect: () => void;
   onDownload: (take: GeneratedTake) => void;
 }
@@ -54,6 +64,9 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   activeTake,
   selectedStyle,
   critique,
+  detectedAnchor,
+  currentLightingId,
+  currentAdvancedLightingPreset,
   compareMode,
   sliderPosition,
   isGenerating,
@@ -68,6 +81,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   onFileSelected,
   onOpenFilePicker,
   onAnalyzeSelfie,
+  onApplyRecommendedLighting,
   onInspect,
   onDownload,
 }) => {
@@ -75,6 +89,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [heatmapAnalysis, setHeatmapAnalysis] = useState<LightingHeatmapAnalysis | null>(null);
   const [lightingQuality, setLightingQuality] = useState<LightingQualityReport | null>(null);
+  const [isAnalyzingQuality, setIsAnalyzingQuality] = useState(false);
   const [isCompareTooltipOpen, setIsCompareTooltipOpen] = useState(false);
   const sliderContainerRef = useRef<HTMLDivElement | null>(null);
   const isPointerDownRef = useRef(false);
@@ -126,6 +141,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   }, [isCompareTooltipOpen, closeCompareTooltipNow]);
 
   const inputSelfieUrl = sourcePortrait?.dataUrl ?? activeTake?.sourceImageUrl ?? null;
+  const effectiveAnchor = activeTake?.anchor ?? detectedAnchor;
   const beforeSourceUrl = activeTake
     ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
     : sourcePortrait?.dataUrl ?? null;
@@ -138,11 +154,13 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   useEffect(() => {
     if (!inputSelfieUrl) {
       setLightingQuality(null);
+      setIsAnalyzingQuality(false);
       return;
     }
 
     let cancelled = false;
-    void analyzeLightingQuality(inputSelfieUrl)
+    setIsAnalyzingQuality(true);
+    void analyzeLightingQuality(inputSelfieUrl, effectiveAnchor)
       .then((report) => {
         if (!cancelled) {
           setLightingQuality(report);
@@ -152,12 +170,17 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
         if (!cancelled) {
           setLightingQuality(null);
         }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsAnalyzingQuality(false);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [inputSelfieUrl]);
+  }, [inputSelfieUrl, effectiveAnchor]);
 
   useEffect(() => {
     if (!beforeSourceUrl) {
@@ -785,95 +808,174 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
       </div>
 
       {/* Input Selfie Lighting Quality Meter (Dynamic Range & Shadow Harshness) */}
-      {lightingQuality && (
+      {(lightingQuality || isAnalyzingQuality) && (
         <div
-          aria-label={`Input selfie lighting quality: ${lightingQuality.rating}`}
-          className="mt-3 rounded-lg border border-white/[0.08] bg-[#141416] px-4 py-3"
+          aria-label={
+            lightingQuality
+              ? `Input selfie lighting quality: ${lightingQuality.rating}`
+              : 'Analyzing input selfie lighting quality'
+          }
+          className="mt-3 rounded-lg border border-white/[0.08] bg-[#141416] px-4 py-3.5"
         >
-          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-            <div className="flex flex-wrap items-center gap-2.5 text-xs">
-              <span className="font-semibold text-[#F5F1E8] whitespace-nowrap">
-                Lighting Quality
-              </span>
-              <span
-                aria-hidden="true"
-                className="inline-flex items-center gap-1"
-              >
-                {[1, 2, 3].map((level) => {
-                  const activeLevel =
-                    lightingQuality.rating === 'High'
-                      ? 3
-                      : lightingQuality.rating === 'Med'
-                        ? 2
-                        : 1;
-                  const isLit = level <= activeLevel;
-                  const litColor =
-                    lightingQuality.rating === 'High'
-                      ? 'bg-[#6CC091]'
-                      : lightingQuality.rating === 'Med'
-                        ? 'bg-[#D4A853]'
-                        : 'bg-[#E07A5F]';
-                  return (
-                    <span
-                      key={level}
-                      className={`h-1.5 w-3.5 rounded-[1px] ${
-                        isLit ? litColor : 'bg-white/[0.12]'
-                      }`}
-                    />
-                  );
-                })}
-              </span>
-              <span
-                className={`font-mono text-xs font-semibold uppercase tracking-wide whitespace-nowrap ${
-                  lightingQuality.rating === 'High'
-                    ? 'text-[#6CC091]'
-                    : lightingQuality.rating === 'Med'
-                      ? 'text-[#D4A853]'
-                      : 'text-[#E07A5F]'
-                }`}
-              >
-                {lightingQuality.rating}
-              </span>
-              <span aria-hidden="true" className="text-[#9B968C]">
-                ·
-              </span>
-              <span className="text-[#9B968C] whitespace-nowrap">
-                {lightingQuality.correctionLevel}
-              </span>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 text-xs text-[#9B968C]">
-              <span className="whitespace-nowrap">
-                Dynamic Range{' '}
-                <span className="font-mono tabular-nums text-[#F5F1E8]">
-                  {lightingQuality.dynamicRangeScore}%
-                </span>
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="whitespace-nowrap">
-                Shadows{' '}
-                <span className="font-mono tabular-nums text-[#F5F1E8]">
-                  {lightingQuality.shadowHarshnessLabel}
-                </span>
-              </span>
-              {beforeSourceUrl && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <button
-                    type="button"
-                    onClick={handleToggleHeatmap}
-                    className="font-medium text-[#F5F1E8] underline decoration-[#D4A853]/60 underline-offset-4 transition-colors hover:text-[#D4A853] whitespace-nowrap cursor-pointer"
+          {lightingQuality ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                <div className="flex flex-wrap items-center gap-2.5 text-xs">
+                  <span className="font-semibold text-[#F5F1E8] whitespace-nowrap">
+                    Lighting Quality
+                  </span>
+                  <span aria-hidden="true" className="inline-flex items-center gap-1">
+                    {[1, 2, 3].map((level) => {
+                      const activeLevel =
+                        lightingQuality.rating === 'High'
+                          ? 3
+                          : lightingQuality.rating === 'Med'
+                            ? 2
+                            : 1;
+                      const isLit = level <= activeLevel;
+                      const litColor =
+                        lightingQuality.rating === 'High'
+                          ? 'bg-[#6CC091]'
+                          : lightingQuality.rating === 'Med'
+                            ? 'bg-[#D4A853]'
+                            : 'bg-[#E07A5F]';
+                      return (
+                        <span
+                          key={level}
+                          className={`h-1.5 w-3.5 rounded-[1px] ${
+                            isLit ? litColor : 'bg-white/[0.12]'
+                          }`}
+                        />
+                      );
+                    })}
+                  </span>
+                  <span
+                    className={`font-mono text-xs font-semibold tabular-nums whitespace-nowrap ${
+                      lightingQuality.rating === 'High'
+                        ? 'text-[#6CC091]'
+                        : lightingQuality.rating === 'Med'
+                          ? 'text-[#D4A853]'
+                          : 'text-[#E07A5F]'
+                    }`}
                   >
-                    {isHeatmapActive ? 'Hide Light Map' : 'Inspect Light Map'}
-                  </button>
-                </>
-              )}
-            </div>
-          </div>
+                    {lightingQuality.rating}
+                  </span>
+                  <span aria-hidden="true" className="text-[#9B968C]">
+                    ·
+                  </span>
+                  <span className="text-[#9B968C] whitespace-nowrap">
+                    {lightingQuality.correctionLevel}
+                  </span>
+                </div>
 
-          <p className="mt-1.5 text-xs leading-relaxed text-[#9B968C]">
-            {lightingQuality.correctionGuidance}
-          </p>
+                <div className="flex flex-wrap items-center gap-2.5 text-xs text-[#9B968C]">
+                  {(() => {
+                    const isRecommendedApplied =
+                      currentLightingId === lightingQuality.recommendedLightingId &&
+                      currentAdvancedLightingPreset === lightingQuality.recommendedAdvancedPreset;
+                    return isRecommendedApplied ? (
+                      <span className="text-[#6CC091] whitespace-nowrap">
+                        Active · {lightingQuality.recommendedPresetLabel}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onApplyRecommendedLighting(
+                            lightingQuality.recommendedLightingId,
+                            lightingQuality.recommendedAdvancedPreset
+                          )
+                        }
+                        disabled={isGenerating}
+                        className="font-medium text-[#D4A853] underline decoration-[#D4A853]/55 underline-offset-4 transition-colors hover:text-[#F5F1E8] disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                      >
+                        Apply {lightingQuality.recommendedPresetLabel}
+                      </button>
+                    );
+                  })()}
+                  {beforeSourceUrl && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <button
+                        type="button"
+                        onClick={handleToggleHeatmap}
+                        className="font-medium text-[#F5F1E8] underline decoration-white/30 underline-offset-4 transition-colors hover:text-[#D4A853] hover:decoration-[#D4A853]/60 whitespace-nowrap cursor-pointer"
+                      >
+                        {isHeatmapActive ? 'Hide Light Map' : 'Inspect Light Map'}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              {/* Dynamic Range & Shadow Harshness Photometric Sub-Meters */}
+              <div className="mt-3 grid grid-cols-1 gap-3 border-t border-white/[0.06] pt-2.5 sm:grid-cols-2 sm:gap-5">
+                <div>
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-[#9B968C]">Dynamic Range</span>
+                    <span className="font-mono tabular-nums text-[#F5F1E8]">
+                      {lightingQuality.dynamicRangeLabel} · {lightingQuality.dynamicRangeScore}%
+                      {lightingQuality.clippedPercent >= 2 && (
+                        <span className="text-[#9B968C]">
+                          {' '}
+                          · {lightingQuality.clippedPercent}% clip
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                  <div
+                    aria-hidden="true"
+                    className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                  >
+                    <div
+                      className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                        lightingQuality.dynamicRangeScore >= 72
+                          ? 'bg-[#6CC091]'
+                          : lightingQuality.dynamicRangeScore >= 50
+                            ? 'bg-[#D4A853]'
+                            : 'bg-[#E07A5F]'
+                      }`}
+                      style={{ transform: `scaleX(${lightingQuality.dynamicRangeScore / 100})` }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
+                    <span className="text-[#9B968C]">Shadow Harshness</span>
+                    <span className="font-mono tabular-nums text-[#F5F1E8]">
+                      {lightingQuality.shadowHarshnessLabel} ·{' '}
+                      {lightingQuality.shadowHarshnessScore}%
+                    </span>
+                  </div>
+                  <div
+                    aria-hidden="true"
+                    className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                  >
+                    <div
+                      className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                        lightingQuality.shadowHarshnessLabel === 'Soft'
+                          ? 'bg-[#6CC091]'
+                          : lightingQuality.shadowHarshnessLabel === 'Moderate'
+                            ? 'bg-[#D4A853]'
+                            : 'bg-[#E07A5F]'
+                      }`}
+                      style={{ transform: `scaleX(${lightingQuality.shadowHarshnessScore / 100})` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <p className="mt-2.5 text-xs leading-relaxed text-[#9B968C]">
+                {lightingQuality.correctionGuidance}
+              </p>
+            </>
+          ) : (
+            <div className="flex items-center justify-between gap-3 text-xs text-[#9B968C]">
+              <span className="font-semibold text-[#F5F1E8]">Lighting Quality</span>
+              <span>Measuring dynamic range &amp; shadow harshness...</span>
+            </div>
+          )}
         </div>
       )}
 

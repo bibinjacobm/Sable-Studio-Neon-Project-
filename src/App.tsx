@@ -59,6 +59,7 @@ const INITIAL_CONFIG: StudioDirectionConfig = {
   lightingId: 'softbox-key',
   advancedLightingPreset: 'none',
   aspectRatio: '3:4',
+  backdropBlur: 4,
   extraNotes: '',
 };
 
@@ -88,6 +89,7 @@ export default function App() {
   const [generationPhase, setGenerationPhase] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isSharpening, setIsSharpening] = useState<boolean>(false);
+  const [isUpdatingBokeh, setIsUpdatingBokeh] = useState<boolean>(false);
   const [isSuggestingRetouches, setIsSuggestingRetouches] = useState<boolean>(false);
   const [suggestRetouchError, setSuggestRetouchError] = useState<string | null>(null);
   const [autoSuggestionsByTakeId, setAutoSuggestionsByTakeId] = useState<
@@ -103,6 +105,8 @@ export default function App() {
   const frameCounterRef = useRef<number>(0);
   const sharpenJobRef = useRef<number>(0);
   const sharpenTimerRef = useRef<number | null>(null);
+  const bokehJobRef = useRef<number>(0);
+  const bokehTimerRef = useRef<number | null>(null);
 
   const selectedStyle = useMemo(() => getStyleById(config.styleId), [config.styleId]);
   const activeTake = useMemo(
@@ -139,6 +143,9 @@ export default function App() {
     return () => {
       if (sharpenTimerRef.current !== null) {
         window.clearTimeout(sharpenTimerRef.current);
+      }
+      if (bokehTimerRef.current !== null) {
+        window.clearTimeout(bokehTimerRef.current);
       }
     };
   }, []);
@@ -178,6 +185,7 @@ export default function App() {
       ...prev,
       styleId,
       lightingId: preset.defaultLighting,
+      backdropBlur: preset.defaultRecipe.backdropBlur ?? prev.backdropBlur,
     }));
   };
 
@@ -262,6 +270,7 @@ export default function App() {
         detectedAnchor,
         lightingId: config.lightingId,
         advancedLightingPreset: config.advancedLightingPreset,
+        backdropBlur: config.backdropBlur,
         aspectRatio: config.aspectRatio,
         extraNotes: config.extraNotes,
       });
@@ -394,6 +403,7 @@ export default function App() {
         framingId: nextRecipe.framingId,
         smartCrop: Boolean(nextRecipe.smartCrop),
         lightingId: nextRecipe.lightingId,
+        backdropBlur: Math.round(nextRecipe.backdropBlur),
       }));
 
       frameCounterRef.current += 1;
@@ -508,6 +518,7 @@ export default function App() {
         lightingId: found.recipe.lightingId,
         advancedLightingPreset: found.recipe.advancedLightingPreset ?? 'none',
         aspectRatio: found.recipe.aspectRatio,
+        backdropBlur: Math.round(found.recipe.backdropBlur),
       }));
     }
   };
@@ -599,6 +610,79 @@ export default function App() {
           }
         });
     }, 40);
+  };
+
+  const handleBackdropBlurChange = (blurPx: number) => {
+    const clamped = Math.max(0, Math.min(20, Math.round(blurPx)));
+    setConfig((prev) => ({ ...prev, backdropBlur: clamped }));
+
+    if (!activeTake || isGenerating) return;
+    const targetTake = activeTake;
+    const targetId = targetTake.id;
+
+    setTakes((prev) =>
+      prev.map((item) =>
+        item.id === targetId
+          ? { ...item, recipe: { ...item.recipe, backdropBlur: clamped } }
+          : item
+      )
+    );
+
+    if (bokehTimerRef.current !== null) {
+      window.clearTimeout(bokehTimerRef.current);
+      bokehTimerRef.current = null;
+    }
+
+    const jobId = ++bokehJobRef.current;
+    setIsUpdatingBokeh(true);
+
+    bokehTimerRef.current = window.setTimeout(() => {
+      bokehTimerRef.current = null;
+      const updatedRecipe: DarkroomRecipe = {
+        ...targetTake.recipe,
+        backdropBlur: clamped,
+      };
+      const targetSharpen = updatedRecipe.sharpen ?? 0;
+
+      void getOrComputeMasks(targetTake.sourceImageUrl, targetTake.anchor)
+        .then((masks) =>
+          renderStudioHeadshot(
+            targetTake.sourceImageUrl,
+            masks,
+            { ...updatedRecipe, sharpen: 0 },
+            targetTake.anchor
+          )
+        )
+        .then(async ({ imageUrl: cleanBaseUrl, alignedSourceUrl }) => {
+          const finalImageUrl =
+            targetSharpen > 0.005
+              ? await applyLocalUnsharpMask(cleanBaseUrl, targetSharpen)
+              : cleanBaseUrl;
+          if (bokehJobRef.current !== jobId) return;
+          setTakes((prev) =>
+            prev.map((item) =>
+              item.id === targetId
+                ? {
+                    ...item,
+                    baseImageUrl: cleanBaseUrl,
+                    imageUrl: finalImageUrl,
+                    alignedSourceUrl,
+                    recipe: { ...item.recipe, backdropBlur: clamped },
+                  }
+                : item
+            )
+          );
+        })
+        .catch(() => {
+          if (bokehJobRef.current !== jobId) return;
+          setErrorMessage('Unable to update background bokeh depth on this frame.');
+        })
+        .finally(() => {
+          if (bokehJobRef.current === jobId) {
+            setIsUpdatingBokeh(false);
+          }
+        });
+    }, 65);
   };
 
   const handleDownloadTake = (take: GeneratedTake) => {
@@ -712,6 +796,9 @@ export default function App() {
               activeTake={activeTake}
               selectedStyle={selectedStyle}
               critique={critique}
+              detectedAnchor={detectedAnchor}
+              currentLightingId={config.lightingId}
+              currentAdvancedLightingPreset={config.advancedLightingPreset}
               compareMode={compareMode}
               sliderPosition={sliderPosition}
               isGenerating={isGenerating}
@@ -726,6 +813,13 @@ export default function App() {
               onFileSelected={(file) => void handleFileSelected(file)}
               onOpenFilePicker={openFilePicker}
               onAnalyzeSelfie={() => void handleAnalyzeSelfie()}
+              onApplyRecommendedLighting={(lightingId, advancedLightingPreset) =>
+                setConfig((prev) => ({
+                  ...prev,
+                  lightingId,
+                  advancedLightingPreset,
+                }))
+              }
               onInspect={() => setLightboxOpen(true)}
               onDownload={handleDownloadTake}
             />
@@ -823,6 +917,7 @@ export default function App() {
                   smartCropSuggestion={smartCropSuggestion}
                   isGenerating={isGenerating}
                   isAnalyzing={isAnalyzing}
+                  isUpdatingBokeh={isUpdatingBokeh}
                   onStyleSelect={handleStyleSelect}
                   onAttireSelect={(attireId: AttireId) =>
                     setConfig((prev) => ({ ...prev, attireId }))
@@ -855,6 +950,7 @@ export default function App() {
                       lightingId: preset.targetLightingId ?? prev.lightingId,
                     }));
                   }}
+                  onBackdropBlurChange={handleBackdropBlurChange}
                   onAspectRatioSelect={(aspectRatio: AspectRatioOption) =>
                     setConfig((prev) => ({ ...prev, aspectRatio }))
                   }

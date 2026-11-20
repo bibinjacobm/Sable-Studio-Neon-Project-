@@ -465,7 +465,7 @@ export function applyRetouchLocally(
     notes.push('cooler architectural balance');
   }
   if (lower.includes('blur') || lower.includes('bokeh') || lower.includes('depth')) {
-    next.backdropBlur = Math.min(16, next.backdropBlur + 4);
+    next.backdropBlur = Math.min(20, next.backdropBlur + 4);
     next.vignette = Math.min(0.62, next.vignette + 0.06);
     notes.push('deeper background bokeh');
   }

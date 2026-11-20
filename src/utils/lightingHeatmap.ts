@@ -1,14 +1,25 @@
+import type {
+  AdvancedLightingPresetId,
+  FramingAnchor,
+  LightingId,
+} from '../data/studioCatalog';
+
 export type LightingQualityRating = 'Low' | 'Med' | 'High';
 
 export interface LightingQualityReport {
   rating: LightingQualityRating;
   score: number;
   dynamicRangeScore: number;
+  dynamicRangeLabel: 'Compressed' | 'Balanced' | 'Wide';
   shadowHarshnessScore: number;
   shadowHarshnessLabel: 'Soft' | 'Moderate' | 'Harsh';
   clippedPercent: number;
   correctionLevel: 'Minimal correction' | 'Moderate correction' | 'Heavy correction';
   correctionGuidance: string;
+  recommendedLightingId: LightingId;
+  recommendedAdvancedPreset: AdvancedLightingPresetId;
+  recommendedPresetLabel: string;
+  usedFaceRegion: boolean;
 }
 
 export interface LightingHeatmapAnalysis {
@@ -253,13 +264,18 @@ export async function generateLightingHeatmap(
 
 /**
  * Fast photometric analyzer (<10ms on a 160px canvas) evaluating an input selfie's
- * usable dynamic range, highlight/shadow clipping, and facial shadow-edge harshness
- * to produce a Low / Med / High Lighting Quality rating and correction guidance.
+ * usable dynamic range, highlight/shadow clipping, and face-anchored shadow-edge harshness
+ * to produce a Low / Med / High Lighting Quality rating and actionable studio correction guidance.
  */
 export async function analyzeLightingQuality(
-  sourceDataUrl: string
+  sourceDataUrl: string,
+  anchor?: FramingAnchor | null
 ): Promise<LightingQualityReport> {
-  const cached = qualityCache.get(sourceDataUrl);
+  const anchorKey = anchor
+    ? `${anchor.faceCenterX.toFixed(2)}:${anchor.faceCenterY.toFixed(2)}:${anchor.faceHeightRatio.toFixed(2)}`
+    : 'default';
+  const cacheKey = `${sourceDataUrl}|${anchorKey}`;
+  const cached = qualityCache.get(cacheKey);
   if (cached) {
     return cached;
   }
@@ -296,12 +312,25 @@ export async function analyzeLightingQuality(
   let blackClipCount = 0;
   let whiteClipCount = 0;
 
-  // Portrait subject region for facial exposure & shadow harshness measurement
-  const xMin = Math.floor(width * 0.22);
-  const xMid = Math.floor(width * 0.5);
-  const xMax = Math.ceil(width * 0.78);
-  const yMin = Math.floor(height * 0.14);
-  const yMax = Math.ceil(height * 0.72);
+  // Use detected facial alignment region when available for tighter shadow-harshness accuracy
+  const usedFaceRegion = Boolean(anchor);
+  let xMin = Math.floor(width * 0.22);
+  let xMid = Math.floor(width * 0.5);
+  let xMax = Math.ceil(width * 0.78);
+  let yMin = Math.floor(height * 0.14);
+  let yMax = Math.ceil(height * 0.72);
+
+  if (anchor) {
+    const faceH = Math.max(0.18, Math.min(0.68, anchor.faceHeightRatio)) * height;
+    const faceW = Math.min(width * 0.72, faceH * 0.85);
+    const cx = Math.max(0.15, Math.min(0.85, anchor.faceCenterX)) * width;
+    const cy = Math.max(0.15, Math.min(0.85, anchor.faceCenterY)) * height;
+    xMin = Math.max(2, Math.floor(cx - faceW * 0.55));
+    xMax = Math.min(width - 2, Math.ceil(cx + faceW * 0.55));
+    xMid = Math.round(Math.max(xMin + 1, Math.min(xMax - 1, cx)));
+    yMin = Math.max(2, Math.floor(cy - faceH * 0.58));
+    yMax = Math.min(height - 2, Math.ceil(cy + faceH * 0.58));
+  }
 
   let faceLumSum = 0;
   let faceCount = 0;
@@ -375,6 +404,8 @@ export async function analyzeLightingQuality(
   const dynamicRangeScore = Math.round(
     Math.max(12, Math.min(100, (spanQuality - clipPenalty) * 100))
   );
+  const dynamicRangeLabel: LightingQualityReport['dynamicRangeLabel'] =
+    dynamicRangeScore >= 72 ? 'Wide' : dynamicRangeScore >= 50 ? 'Balanced' : 'Compressed';
 
   // 2. Shadow Harshness: steepness of shadow-transition edges + side-to-side lighting asymmetry
   let shadowGradSum = 0;
@@ -406,7 +437,8 @@ export async function analyzeLightingQuality(
   const rightMean = rightCount > 0 ? rightSum / rightCount : faceMean;
   const sideAsymmetry = Math.abs(leftMean - rightMean);
 
-  const edgeHarshness = Math.min(1, avgShadowGrad / 0.12) * 0.45 + Math.min(1, steepEdgeFrac / 0.28) * 0.25;
+  const edgeHarshness =
+    Math.min(1, avgShadowGrad / 0.12) * 0.45 + Math.min(1, steepEdgeFrac / 0.28) * 0.25;
   const imbalanceHarshness =
     Math.min(1, sideAsymmetry / 0.18) * 0.18 + Math.min(1, faceDeepShadowFrac / 0.35) * 0.12;
   const shadowHarshnessScore = Math.round(
@@ -436,40 +468,66 @@ export async function analyzeLightingQuality(
   let correctionLevel: LightingQualityReport['correctionLevel'] = 'Moderate correction';
   let correctionGuidance =
     'Moderate tonal imbalance — Softbox Studio Key or Diffused Window lighting will smooth facial contrast.';
+  let recommendedLightingId: LightingId = 'softbox-key';
+  let recommendedAdvancedPreset: AdvancedLightingPresetId = 'none';
+  let recommendedPresetLabel = 'Softbox Key';
 
   if (rating === 'High') {
     correctionLevel = 'Minimal correction';
+    recommendedLightingId = 'diffused-window';
+    recommendedAdvancedPreset = 'none';
+    recommendedPresetLabel = 'Diffused Window';
     correctionGuidance =
       'Well-balanced dynamic range and soft shadow rolloff — subtle key fill and backdrop separation will look natural.';
   } else if (rating === 'Low') {
     correctionLevel = 'Heavy correction';
     if (shadowHarshnessScore >= 65) {
+      recommendedLightingId = 'diffused-window';
+      recommendedAdvancedPreset = 'soft-diffused';
+      recommendedPresetLabel = 'Soft Diffused';
       correctionGuidance =
-        'Harsh shadow transitions detected — use Soft Diffused lighting or Softbox Studio Key to lift and smooth facial shadows.';
+        'Harsh shadow transitions detected — apply Soft Diffused lighting to lift and smooth facial shadows.';
     } else if (clippedFrac >= 0.12) {
+      recommendedLightingId = 'softbox-key';
+      recommendedAdvancedPreset = 'soft-diffused';
+      recommendedPresetLabel = 'Soft Diffused';
       correctionGuidance =
-        'Clipped highlights or crushed blacks detected — studio exposure rebalancing and controlled backdrop contrast are recommended.';
+        'Clipped highlights or crushed blacks detected — studio exposure rebalancing and soft fill are recommended.';
     } else {
+      recommendedLightingId = 'softbox-key';
+      recommendedAdvancedPreset = 'none';
+      recommendedPresetLabel = 'Softbox Key';
       correctionGuidance =
-        'Compressed dynamic range detected — studio key relighting and gentle tonal sculpting will restore clarity and depth.';
+        'Compressed dynamic range detected — Softbox Studio Key relighting will restore clarity and dimensional depth.';
     }
   } else if (shadowHarshnessLabel === 'Harsh') {
+    recommendedLightingId = 'diffused-window';
+    recommendedAdvancedPreset = 'soft-diffused';
+    recommendedPresetLabel = 'Soft Diffused';
     correctionGuidance =
-      'Strong directional shadows detected — Soft Diffused or Softbox Studio Key will even out facial illumination.';
+      'Strong directional shadows detected — Soft Diffused fill will even out facial illumination.';
   } else if (dynamicRangeScore < 58) {
+    recommendedLightingId = 'rembrandt';
+    recommendedAdvancedPreset = 'none';
+    recommendedPresetLabel = 'Rembrandt';
     correctionGuidance =
-      'Slightly flat tonal range — Rembrandt or Softbox Studio Key will add clean dimensional modeling.';
+      'Slightly flat tonal range — Rembrandt studio lighting will add crisp dimensional modeling.';
   }
 
   const report: LightingQualityReport = {
     rating,
     score,
     dynamicRangeScore,
+    dynamicRangeLabel,
     shadowHarshnessScore,
     shadowHarshnessLabel,
     clippedPercent: Math.round(clippedFrac * 100),
     correctionLevel,
     correctionGuidance,
+    recommendedLightingId,
+    recommendedAdvancedPreset,
+    recommendedPresetLabel,
+    usedFaceRegion,
   };
 
   if (qualityCache.size >= MAX_CACHE_ENTRIES) {
@@ -478,7 +536,7 @@ export async function analyzeLightingQuality(
       qualityCache.delete(oldestKey);
     }
   }
-  qualityCache.set(sourceDataUrl, report);
+  qualityCache.set(cacheKey, report);
 
   return report;
 }

@@ -133,6 +133,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     detectedAnchor,
     lightingId,
     advancedLightingPreset,
+    backdropBlur,
     aspectRatio,
     extraNotes,
   } = req.body ?? {};
@@ -143,6 +144,12 @@ app.post('/api/headshots/plan', async (req, res) => {
   const safeSmartCrop = Boolean(smartCrop);
   const safeLighting = getLightingById(lightingId);
   const safeAdvancedPreset = getAdvancedLightingPresetById(advancedLightingPreset);
+  const safeBackdropBlur = clamp(
+    backdropBlur,
+    0,
+    20,
+    safeStyle.defaultRecipe.backdropBlur ?? 6
+  );
   const safeAspect = normalizeAspectRatio(aspectRatio);
 
   const baseRecipe = buildDefaultRecipe({
@@ -152,6 +159,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     smartCrop: safeSmartCrop,
     lightingId: safeLighting.id,
     advancedLightingPreset: safeAdvancedPreset.id,
+    backdropBlur: safeBackdropBlur,
     aspectRatio: safeAspect,
     extraNotes: typeof extraNotes === 'string' ? extraNotes : '',
   });
@@ -322,15 +330,22 @@ app.post('/api/headshots/retouch-recipe', async (req, res) => {
     return;
   }
 
+  const fallbackStyle = getStyleById(currentRecipe?.styleId);
   const fallbackRecipe: DarkroomRecipe = {
     ...buildDefaultRecipe({
-      styleId: getStyleById(currentRecipe?.styleId).id,
+      styleId: fallbackStyle.id,
       attireId: getAttireById(currentRecipe?.attireId).id,
       framingId: getFramingById(currentRecipe?.framingId).id,
       smartCrop: Boolean(currentRecipe?.smartCrop),
       lightingId: getLightingById(currentRecipe?.lightingId).id,
       advancedLightingPreset: getAdvancedLightingPresetById(currentRecipe?.advancedLightingPreset)
         .id,
+      backdropBlur: clamp(
+        currentRecipe?.backdropBlur,
+        0,
+        20,
+        fallbackStyle.defaultRecipe.backdropBlur ?? 6
+      ),
       aspectRatio: normalizeAspectRatio(currentRecipe?.aspectRatio),
       extraNotes: '',
     }),
@@ -440,7 +455,7 @@ Rules:
       saturation: clamp(parsed.saturation, -1, 0.35, fallbackRecipe.saturation),
       monochrome:
         typeof parsed.monochrome === 'boolean' ? parsed.monochrome : fallbackRecipe.monochrome,
-      backdropBlur: clamp(parsed.backdropBlur, 0, 16, fallbackRecipe.backdropBlur),
+      backdropBlur: clamp(parsed.backdropBlur, 0, 20, fallbackRecipe.backdropBlur),
       vignette: clamp(parsed.vignette, 0, 0.75, fallbackRecipe.vignette),
       rimLight: clamp(parsed.rimLight, 0, 1, fallbackRecipe.rimLight),
       keyLightStrength: clamp(parsed.keyLightStrength, 0, 1, fallbackRecipe.keyLightStrength),
@@ -501,7 +516,7 @@ function applyHeuristicRetouch(prompt: string, current: DarkroomRecipe): Darkroo
     next.warmth = Math.max(-0.28, next.warmth - 0.1);
   }
   if (lower.includes('blur') || lower.includes('bokeh') || lower.includes('depth')) {
-    next.backdropBlur = Math.min(16, next.backdropBlur + 4);
+    next.backdropBlur = Math.min(20, next.backdropBlur + 4);
     next.vignette = Math.min(0.62, next.vignette + 0.06);
   }
   if (lower.includes('tight') || lower.includes('closer') || lower.includes('zoom in')) {

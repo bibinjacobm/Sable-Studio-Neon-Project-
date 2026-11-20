@@ -9,6 +9,7 @@ import {
   ChevronRight,
   Download,
   Expand,
+  FileText,
   History,
   SlidersHorizontal,
   Trash2,
@@ -19,6 +20,7 @@ import {
   downloadAllPortraitsZip,
   downloadBatchPortraitsZip,
 } from '../utils/imageProcessing';
+import { exportPortfolioPdf } from '../utils/portfolioPdf';
 
 type HistoryFilter = 'all' | 'retouched';
 type HistorySortOrder = 'newest' | 'oldest';
@@ -62,9 +64,12 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [portfolioTitle, setPortfolioTitle] = useState('');
   const [isExportingZip, setIsExportingZip] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState<string | null>(null);
+  const isBusyExporting = isExportingZip || isExportingPdf;
 
   const takeIdSet = useMemo(() => new Set(takes.map((take) => take.id)), [takes]);
 
@@ -127,6 +132,18 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
     });
   };
 
+  const handleStartPortfolioExport = () => {
+    setExportError(null);
+    setExportSuccess(null);
+    setIsBatchMode(true);
+    setSelectedIds((prev) => {
+      const valid = prev.filter((id) => takeIdSet.has(id));
+      if (valid.length > 0) return valid;
+      const defaults = visibleTakes.length > 0 ? visibleTakes : takes;
+      return defaults.map((take) => take.id);
+    });
+  };
+
   const handleToggleSelectTake = (id: string) => {
     setExportError(null);
     setExportSuccess(null);
@@ -157,7 +174,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   };
 
   const handleDownloadAll = async () => {
-    if (takes.length === 0 || isExportingZip) return;
+    if (takes.length === 0 || isBusyExporting) return;
     setExportError(null);
     setExportSuccess(null);
     setIsExportingZip(true);
@@ -178,7 +195,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   };
 
   const handleExportBatch = async () => {
-    if (selectedTakes.length === 0 || isExportingZip) return;
+    if (selectedTakes.length === 0 || isBusyExporting) return;
     setExportError(null);
     setExportSuccess(null);
     setIsExportingZip(true);
@@ -197,6 +214,29 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
       );
     } finally {
       setIsExportingZip(false);
+    }
+  };
+
+  const handleExportPortfolioPdf = async () => {
+    if (selectedTakes.length === 0 || isBusyExporting) return;
+    setExportError(null);
+    setExportSuccess(null);
+    setIsExportingPdf(true);
+    try {
+      await exportPortfolioPdf(selectedTakes, { title: portfolioTitle });
+      setExportSuccess(
+        `Exported branded PDF contact sheet for ${selectedTakes.length} ${
+          selectedTakes.length === 1 ? 'take' : 'takes'
+        }.`
+      );
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to generate PDF portfolio contact sheet. Please try again.'
+      );
+    } finally {
+      setIsExportingPdf(false);
     }
   };
 
@@ -224,39 +264,23 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
 
           {takes.length > 0 && (
             <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={handleToggleBatchMode}
-                aria-pressed={isBatchMode}
-                className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
-                  isBatchMode
-                    ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
-                    : 'border-white/[0.12] bg-[#0B0B0C] text-[#F5F1E8] hover:border-white/25 hover:bg-[#1C1C1F]'
-                }`}
-              >
-                {isBatchMode ? (
-                  <>
-                    <X className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
-                    <span>Exit Batch</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckSquare
-                      className="h-3.5 w-3.5 text-[#D4A853] shrink-0"
-                      aria-hidden="true"
-                    />
-                    <span>Batch Export</span>
-                  </>
-                )}
-              </button>
-
-              {!isBatchMode && (
+              {isBatchMode ? (
+                <button
+                  type="button"
+                  onClick={handleToggleBatchMode}
+                  aria-pressed={isBatchMode}
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-[#D4A853] bg-[#D4A853]/15 px-2.5 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                >
+                  <X className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                  <span>Exit Selection</span>
+                </button>
+              ) : (
                 <button
                   type="button"
                   onClick={() => void handleDownloadAll()}
-                  disabled={isExportingZip}
+                  disabled={isBusyExporting}
                   aria-label={`Download all ${takes.length} session takes as a compressed ZIP archive`}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-[#D4A853]/50 bg-[#0B0B0C] px-2.5 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-white/[0.12] bg-[#0B0B0C] px-2.5 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-white/25 hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
                 >
                   <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
                   <span>{isExportingZip ? 'Compressing...' : 'Download All'}</span>
@@ -267,9 +291,33 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
         </div>
         <p className="mt-1 text-xs text-[#9B968C]">
           {isBatchMode
-            ? 'Select takes below to package into one ZIP with a generation parameters summary'
+            ? 'Select takes below to export a branded PDF portfolio contact sheet or ZIP bundle'
             : 'Click any generated headshot to toggle it immediately on the portrait stage'}
         </p>
+
+        {takes.length > 0 && !isBatchMode && (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={handleStartPortfolioExport}
+              disabled={isBusyExporting}
+              className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-md border border-[#D4A853]/55 bg-[#0B0B0C] px-3 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+            >
+              <FileText className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+              <span>Export Portfolio</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleBatchMode}
+              disabled={isBusyExporting}
+              className="inline-flex min-h-[36px] items-center justify-center gap-1.5 rounded-md border border-white/[0.12] bg-[#0B0B0C] px-3 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-white/25 hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+            >
+              <CheckSquare className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+              <span>Batch Export</span>
+            </button>
+          </div>
+        )}
 
         {exportError && (
           <p role="alert" className="mt-2.5 text-xs text-amber-300">
@@ -317,7 +365,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
         </div>
       ) : (
         <>
-          {/* Batch Export Selection & Bundle Bar */}
+          {/* Portfolio & Batch Export Selection Bar */}
           {isBatchMode && (
             <div className="flex flex-col gap-3 rounded-lg border border-[#D4A853]/35 bg-[#0B0B0C]/90 p-3.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -328,7 +376,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                   <span aria-hidden="true" className="text-[#9B968C]">
                     ·
                   </span>
-                  <span className="text-[#9B968C]">Includes parameter summary .txt</span>
+                  <span className="text-[#9B968C]">Full styling metadata</span>
                 </div>
 
                 <div className="flex items-center gap-3 text-xs">
@@ -351,23 +399,54 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => void handleExportBatch()}
-                disabled={selectedTakes.length === 0 || isExportingZip}
-                className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-4 py-2 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-[#9B968C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
-              >
-                <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                <span>
-                  {isExportingZip
-                    ? 'Bundling ZIP Archive...'
-                    : selectedTakes.length > 0
-                      ? `Download ZIP (${selectedTakes.length} ${
-                          selectedTakes.length === 1 ? 'Take' : 'Takes'
-                        })`
-                      : 'Select Takes to Export ZIP'}
-                </span>
-              </button>
+              <div>
+                <label htmlFor="portfolio-sheet-title" className="sr-only">
+                  Optional portfolio title for PDF cover header
+                </label>
+                <input
+                  id="portfolio-sheet-title"
+                  type="text"
+                  value={portfolioTitle}
+                  onChange={(e) => setPortfolioTitle(e.target.value)}
+                  maxLength={72}
+                  placeholder="Portfolio title (optional, e.g. Executive Press Kit)"
+                  className="w-full rounded-md border border-white/[0.1] bg-[#141416] px-3 py-2 text-xs text-[#F5F1E8] placeholder:text-[#9B968C]/70 focus:border-[#D4A853] focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => void handleExportPortfolioPdf()}
+                  disabled={selectedTakes.length === 0 || isBusyExporting}
+                  className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-3 py-2 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-[#9B968C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                >
+                  <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>
+                    {isExportingPdf
+                      ? 'Building PDF...'
+                      : selectedTakes.length > 0
+                        ? `Export Portfolio (${selectedTakes.length})`
+                        : 'Export Portfolio PDF'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleExportBatch()}
+                  disabled={selectedTakes.length === 0 || isBusyExporting}
+                  className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md border border-[#D4A853]/50 bg-[#141416] px-3 py-2 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:text-[#9B968C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                >
+                  <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                  <span>
+                    {isExportingZip
+                      ? 'Bundling ZIP...'
+                      : selectedTakes.length > 0
+                        ? `Download ZIP (${selectedTakes.length})`
+                        : 'Download ZIP'}
+                  </span>
+                </button>
+              </div>
             </div>
           )}
 
@@ -462,7 +541,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
               </button>
             </div>
           ) : (
-            <div className="grid max-h-[600px] grid-cols-2 gap-3 overflow-y-auto pr-1">
+            <div className="grid max-h-[600px] grid-cols-2 gap-3 overflow-y-auto p-1">
               {visibleTakes.map((take) => {
                 const isActive = take.id === activeTakeId;
                 const isSelected = validSelectedIdSet.has(take.id);
@@ -474,10 +553,10 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                 return (
                   <article
                     key={take.id}
-                    className={`group flex flex-col overflow-hidden rounded-lg border transition-colors duration-150 ${
+                    className={`group relative flex flex-col overflow-hidden rounded-lg border transition-[transform,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform hover:z-10 hover:scale-[1.025] hover:shadow-[0_12px_28px_rgba(0,0,0,0.48)] focus-within:z-10 focus-within:scale-[1.015] active:scale-[0.99] motion-reduce:transition-none motion-reduce:hover:scale-100 motion-reduce:focus-within:scale-100 motion-reduce:active:scale-100 ${
                       isHighlighted
                         ? 'border-[#D4A853] bg-[#18181B] ring-1 ring-[#D4A853]/45'
-                        : 'border-white/[0.08] bg-[#0B0B0C] hover:border-white/25'
+                        : 'border-white/[0.08] bg-[#0B0B0C] hover:border-[#D4A853]/55'
                     }`}
                   >
                     <button
@@ -507,7 +586,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                           onError={() =>
                             setFailedImages((prev) => ({ ...prev, [take.id]: true }))
                           }
-                          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+                          className="h-full w-full object-cover transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform group-hover:scale-[1.05] group-focus-within:scale-[1.04] group-active:scale-[1.02] motion-reduce:transition-none motion-reduce:group-hover:scale-100 motion-reduce:group-focus-within:scale-100 motion-reduce:group-active:scale-100"
                         />
                       ) : (
                         <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-[#1C1C1F] px-2 text-center text-[#9B968C]">

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Camera, Check, ChevronDown, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Camera, Check, ChevronDown, RotateCcw, SlidersHorizontal, Sparkles } from 'lucide-react';
 import {
   ADVANCED_LIGHTING_PRESETS,
   ASPECT_RATIO_OPTIONS,
@@ -7,6 +7,7 @@ import {
   FRAMING_OPTIONS,
   LIGHTING_OPTIONS,
   STUDIO_STYLES,
+  formatApertureFromBlur,
   getAdvancedLightingPresetById,
   getAttireById,
   getFramingById,
@@ -31,12 +32,14 @@ interface DirectionPanelProps {
   smartCropSuggestion: SmartCropSuggestion | null;
   isGenerating: boolean;
   isAnalyzing: boolean;
+  isUpdatingBokeh: boolean;
   onStyleSelect: (styleId: StyleId) => void;
   onAttireSelect: (attireId: AttireId) => void;
   onFramingSelect: (framingId: FramingId) => void;
   onSmartCropToggle: (enabled: boolean) => void;
   onLightingSelect: (lightingId: LightingId) => void;
   onAdvancedLightingSelect: (presetId: AdvancedLightingPresetId) => void;
+  onBackdropBlurChange: (blurPx: number) => void;
   onAspectRatioSelect: (ratio: AspectRatioOption) => void;
   onExtraNotesChange: (notes: string) => void;
   onApplyCritique: () => void;
@@ -51,12 +54,14 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   smartCropSuggestion,
   isGenerating,
   isAnalyzing,
+  isUpdatingBokeh,
   onStyleSelect,
   onAttireSelect,
   onFramingSelect,
   onSmartCropToggle,
   onLightingSelect,
   onAdvancedLightingSelect,
+  onBackdropBlurChange,
   onAspectRatioSelect,
   onExtraNotesChange,
   onApplyCritique,
@@ -64,6 +69,10 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   onUploadClick,
 }) => {
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const selectedStyle = getStyleById(config.styleId);
+  const defaultStyleBlur = selectedStyle.defaultRecipe.backdropBlur ?? 6;
+  const roundedBlur = Math.max(0, Math.min(20, Math.round(config.backdropBlur)));
+  const apertureLabel = formatApertureFromBlur(roundedBlur);
   const selectedAdvancedPreset = getAdvancedLightingPresetById(config.advancedLightingPreset);
 
   return (
@@ -372,6 +381,61 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
 
         <p className="mt-1.5 text-[11px] leading-relaxed text-[#9B968C]">
           {selectedAdvancedPreset.description}
+        </p>
+      </div>
+
+      {/* Depth of Field Optical Bokeh Slider */}
+      <div className="border-t border-white/[0.07] pt-4">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <label
+            htmlFor="direction-depth-of-field"
+            className="text-xs font-semibold text-[#F5F1E8] whitespace-nowrap"
+          >
+            Depth of Field
+          </label>
+          <span className="font-mono text-[11px] tabular-nums text-[#9B968C] whitespace-nowrap">
+            {isUpdatingBokeh ? (
+              <span className="text-[#D4A853]">Updating bokeh...</span>
+            ) : (
+              <>
+                <span className="font-medium text-[#D4A853]">{apertureLabel}</span>{' '}
+                <span aria-hidden="true">·</span> {roundedBlur}px blur
+              </>
+            )}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2.5">
+          <span className="text-[11px] text-[#9B968C] whitespace-nowrap shrink-0">Sharp</span>
+          <input
+            id="direction-depth-of-field"
+            type="range"
+            min={0}
+            max={20}
+            step={1}
+            value={roundedBlur}
+            disabled={isGenerating}
+            aria-label="Depth of Field background bokeh intensity"
+            aria-valuetext={`${apertureLabel}, ${roundedBlur} pixels background blur`}
+            onChange={(e) => onBackdropBlurChange(Number(e.target.value))}
+            className="h-2 flex-1 cursor-pointer appearance-none rounded-full bg-white/[0.12] accent-[#D4A853] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#141416] disabled:cursor-not-allowed disabled:opacity-45"
+          />
+          <span className="text-[11px] text-[#9B968C] whitespace-nowrap shrink-0">Bokeh</span>
+          <button
+            type="button"
+            onClick={() => onBackdropBlurChange(defaultStyleBlur)}
+            disabled={isGenerating || roundedBlur === defaultStyleBlur}
+            aria-label={`Reset depth of field to ${defaultStyleBlur}px style default`}
+            className="inline-flex min-h-[28px] items-center gap-1 rounded-md border border-white/[0.08] bg-[#0B0B0C] px-2 py-1 text-[11px] font-medium text-[#9B968C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-white/20 hover:text-[#F5F1E8] disabled:cursor-not-allowed disabled:opacity-35 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+          >
+            <RotateCcw className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span>Reset</span>
+          </button>
+        </div>
+
+        <p className="mt-1.5 text-[11px] leading-relaxed text-[#9B968C]">
+          Softens the background using your portrait segmentation mask while keeping your subject
+          sharp.
         </p>
       </div>
 

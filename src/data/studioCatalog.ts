@@ -45,7 +45,7 @@ export interface DarkroomRecipe {
   saturation: number;
   /** Full silver-gelatin black & white mode */
   monochrome: boolean;
-  /** 0 to 16 px optical lens bokeh blur on backdrop */
+  /** 0 to 20 px optical lens bokeh blur on backdrop */
   backdropBlur: number;
   /** 0 to 0.75 edge vignette strength */
   vignette: number;
@@ -122,6 +122,8 @@ export interface StudioDirectionConfig {
   lightingId: LightingId;
   advancedLightingPreset: AdvancedLightingPresetId;
   aspectRatio: AspectRatioOption;
+  /** 0 to 20 px optical background bokeh blur */
+  backdropBlur: number;
   extraNotes: string;
 }
 
@@ -523,9 +525,25 @@ export function suggestSmartCrop(
   };
 }
 
+export function formatApertureFromBlur(blurPx: number): string {
+  const clamped = Math.max(0, Math.min(20, Math.round(blurPx)));
+  if (clamped === 0) return 'f/11';
+  if (clamped <= 2) return 'f/8.0';
+  if (clamped <= 4) return 'f/5.6';
+  if (clamped <= 7) return 'f/4.0';
+  if (clamped <= 10) return 'f/2.8';
+  if (clamped <= 13) return 'f/2.0';
+  if (clamped <= 16) return 'f/1.8';
+  return 'f/1.4';
+}
+
 export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecipe {
   const style = getStyleById(config.styleId);
   const base = style.defaultRecipe;
+  const resolvedBlur =
+    typeof config.backdropBlur === 'number' && Number.isFinite(config.backdropBlur)
+      ? Math.max(0, Math.min(20, Math.round(config.backdropBlur)))
+      : base.backdropBlur ?? 6;
   const baseRecipe: DarkroomRecipe = {
     styleId: config.styleId,
     attireId: config.attireId,
@@ -539,7 +557,7 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
     warmth: base.warmth ?? 0,
     saturation: base.saturation ?? -0.04,
     monochrome: base.monochrome ?? false,
-    backdropBlur: base.backdropBlur ?? 6,
+    backdropBlur: resolvedBlur,
     vignette: base.vignette ?? 0.3,
     rimLight: base.rimLight ?? 0.45,
     keyLightStrength: base.keyLightStrength ?? 0.5,

@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Archive, Download, Trash2 } from 'lucide-react';
+import { Archive, Download, FileText, Trash2 } from 'lucide-react';
 import type { GeneratedTake } from '../data/studioCatalog';
 import { downloadAllPortraitsZip } from '../utils/imageProcessing';
+import { exportPortfolioPdf } from '../utils/portfolioPdf';
 
 interface DarkroomReelProps {
   takes: GeneratedTake[];
@@ -19,10 +20,12 @@ export const DarkroomReel: React.FC<DarkroomReelProps> = ({
   onRemoveTake,
 }) => {
   const [isExportingZip, setIsExportingZip] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const isBusy = isExportingZip || isExportingPdf;
 
   const handleDownloadAll = async () => {
-    if (takes.length === 0 || isExportingZip) return;
+    if (takes.length === 0 || isBusy) return;
     setExportError(null);
     setIsExportingZip(true);
     try {
@@ -33,6 +36,23 @@ export const DarkroomReel: React.FC<DarkroomReelProps> = ({
       );
     } finally {
       setIsExportingZip(false);
+    }
+  };
+
+  const handleExportPortfolio = async () => {
+    if (takes.length === 0 || isBusy) return;
+    setExportError(null);
+    setIsExportingPdf(true);
+    try {
+      await exportPortfolioPdf(takes);
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to build PDF portfolio contact sheet. Please try again.'
+      );
+    } finally {
+      setIsExportingPdf(false);
     }
   };
 
@@ -50,21 +70,33 @@ export const DarkroomReel: React.FC<DarkroomReelProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4">
+        <div className="flex flex-wrap items-center gap-3">
           <p className="font-mono text-xs tabular-nums text-[#9B968C]">
             {takes.length} {takes.length === 1 ? 'frame' : 'frames'} exposed
           </p>
 
           {takes.length > 0 && (
-            <button
-              type="button"
-              onClick={() => void handleDownloadAll()}
-              disabled={isExportingZip}
-              className="inline-flex min-h-[38px] items-center gap-2 rounded-md border border-[#D4A853]/50 bg-[#141416] px-4 py-2 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0B0C] cursor-pointer"
-            >
-              <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
-              <span>{isExportingZip ? 'Packing ZIP...' : 'Download All (ZIP)'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={() => void handleExportPortfolio()}
+                disabled={isBusy}
+                className="inline-flex min-h-[38px] items-center gap-2 rounded-md bg-[#F5F1E8] px-4 py-2 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0B0C] cursor-pointer"
+              >
+                <FileText className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>{isExportingPdf ? 'Building PDF...' : 'Export Portfolio (PDF)'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void handleDownloadAll()}
+                disabled={isBusy}
+                className="inline-flex min-h-[38px] items-center gap-2 rounded-md border border-[#D4A853]/50 bg-[#141416] px-4 py-2 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0B0C] cursor-pointer"
+              >
+                <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                <span>{isExportingZip ? 'Packing ZIP...' : 'Download All (ZIP)'}</span>
+              </button>
+            </>
           )}
         </div>
       </div>

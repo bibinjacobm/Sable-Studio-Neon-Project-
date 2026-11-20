@@ -17,10 +17,11 @@
 - **Wardrobe & Attire Tone**: Keep Original, Charcoal Suit Tone, Crisp Ivory Tone, Obsidian Knit Tone, or Executive Navy Tone.
 - **Lens Framing, Smart Crop & Output Formats**: Tight Headshot (`85mm`), Head & Shoulders (`85mm`), or Mid-Chest Editorial (`50mm`) across `3:4` (Press & Bio), `1:1` (LinkedIn & Avatar), and `4:3` (Website Feature) aspect ratios—paired with a **Smart Crop** toggle that analyzes detected facial alignment (eye line, face scale, and headroom) to auto-select the optimal framing and subtle zoom/vertical offset.
 - **Lighting Setup & Advanced Lighting Presets**: Choose from Softbox Studio Key, Rembrandt Dramatic, Golden Hour Rim, or Diffused Window, plus creative **Advanced Lighting** overrides (**Golden Hour**, **Noir High-Contrast**, and **Soft Diffused**).
+- **Depth of Field (`Bokeh` Slider)**: Adjust optical background blur (`0–20px`, mapped to `f/11`–`f/1.4` aperture readouts) in real time using the cached neural segmentation masks to blur the backdrop cleanly while keeping your portrait subject razor-sharp.
 
 ### Darkroom Workbench & Retouching
 - **Before & After Comparison Stage + Light Intensity Heat-Map**: Toggle seamlessly between **Final Portrait**, interactive **Split Compare** (draggable brass curtain divider with keyboard arrow support), and pixel-aligned **Original** (complete with a floating interactive hover tooltip explaining side-by-side verification and offering one-click `Split 50/50` / `View Original` shortcuts), plus a false-color **Light Map** overlay on the Before/source selfie that maps shadow density, balanced midtones, peak highlights, directional key bias, and style-recommendation context.
-- **Input Lighting Quality Indicator (`Low / Med / High`)**: Automatically analyzes the uploaded selfie's usable dynamic range (2nd–98th percentile tonal span and clipping) and facial shadow-edge harshness (local gradient steepness and left/right illumination asymmetry), displaying a `Low` / `Med` / `High` quality meter with correction guidance (`Minimal`, `Moderate`, or `Heavy correction`).
+- **Input Lighting Quality Indicator (`Low / Med / High`)**: Automatically analyzes the uploaded selfie's usable dynamic range (2nd–98th percentile tonal span and clipping) and face-anchored shadow-edge harshness (local gradient steepness and left/right illumination asymmetry), displaying a `Low` / `Med` / `High` quality rating with individual Dynamic Range and Shadow Harshness meters, correction intensity (`Minimal`, `Moderate`, or `Heavy correction`), and a one-click button to apply the recommended studio lighting preset.
 - **Photographer's Lighting Critique**: Analyzes selfie exposure, contrast spread, and ambient color cast to recommend an optimal backdrop, wardrobe tone, framing, and lighting setup with one-click apply.
 - **Natural-Language Retouching Prompt & AI Auto-Suggest**: Refine any active frame via plain-English cues (e.g., softening skin texture, increasing background depth, golden rim light, tighter 85mm crop, or backdrop swaps), or click **Auto-Suggest** next to the input field to generate 4 fresh, context-aware retouching prompts tailored to the active portrait's style and tonal recipe via a lightweight Gemini (`gemini-4-hydrogen`) call.
 - **Local Unsharp Masking (`Sharpen` Slider)**: Non-destructive luminance-guided unsharp masking (`0%–100%`) applied directly via the 2D canvas engine, reinforcing micro-contrast on eyes, hair, and edges while protecting smooth skin and backdrop bokeh.
@@ -31,6 +32,7 @@
 - **Fullscreen Portrait Lightbox**: High-resolution inspection modal with original/studio toggle, **Download PNG**, and one-click **Copy to Clipboard** (`image/png` `ClipboardItem`) for pasting directly into Slack, Teams, or email.
 - **Embedded EXIF Metadata**: Every downloaded portrait (single PNG or inside ZIP archives) embeds spec-compliant TIFF 6.0 / EXIF 2.32 metadata (`eXIf` + `tEXt` chunks for PNG; `APP1` segment for JPEG) recording **Sable Studio** branding (`Make`, `Software`, `Artist`, `Copyright`) and the frame's style, lighting, framing, attire, aspect ratio, and retouch tags (`ImageDescription`, `Model`, `UserComment`, `DateTimeOriginal`).
 - **Selective Batch Export & Compressed ZIP Archives**: Toggle **Batch Export** mode inside the Session History panel to multi-select specific takes (with `Select All` / `Select Visible` and `Clear` controls) and bundle them into a single DEFLATE-compressed ZIP archive alongside `generation-parameters-summary.txt` detailing every take's style, wardrobe, framing, Smart Crop status, lighting, tonal calibration, optics, facial anchor, and retouch notes—or use **Download All** to archive the entire session in one click.
+- **Branded PDF Portfolio Contact Sheet (`Export Portfolio`)**: Aggregate selected takes from the Session History panel (or export the full session from the Darkroom Reel) into a multi-page, A4 Editorial Darkroom PDF contact sheet (`sable-studio-portfolio-*.pdf`) with an optional custom portfolio cover title, aspect-preserved portrait plates, and full generation metadata and styling parameters (style, wardrobe, framing, Smart Crop, lighting & advanced preset, Depth of Field aperture, tonal calibration, finish metrics, and retouch notes).
 
 ---
 
@@ -73,7 +75,7 @@ Sable Studio runs **100% free** using on-device neural segmentation and canvas-b
 ## Tech Stack
 
 - **Frontend**: React 19, TypeScript, Vite 8, Tailwind CSS v4, Lucide React
-- **Computer Vision & Imaging**: `@mediapipe/tasks-vision`, HTML5 2D Canvas API, custom PNG/JPEG EXIF binary encoder, `jszip`
+- **Computer Vision & Imaging**: `@mediapipe/tasks-vision`, HTML5 2D Canvas API, custom PNG/JPEG EXIF binary encoder, `jszip`, `jspdf`
 - **Backend (Optional Full-Stack Server)**: Express, `tsx`, `@google/genai` (`gemini-4-hydrogen`)
 
 ---
@@ -143,15 +145,16 @@ NODE_ENV=production npm start
     │   ├── darkroomEngine.ts        # MediaPipe segmentation, viewport-aligned compositing & unsharp mask
     │   ├── exifMetadata.ts          # Binary TIFF 6.0 / EXIF 2.32 encoder for PNG (eXIf/tEXt) & JPEG (APP1)
     │   ├── imageProcessing.ts       # Selfie ingestion, EXIF downloads, clipboard copy, DEFLATE ZIP export
-    │   ├── lightingHeatmap.ts       # False-color exposure heat-map & shadow distribution analyzer
-    │   └── localDarkroomAi.ts       # Client-side photometric analysis, framing planner & retouch fallback
+    │   ├── lightingHeatmap.ts       # False-color exposure heat-map & lighting quality analyzer
+    │   ├── localDarkroomAi.ts       # Client-side photometric analysis, framing planner & retouch fallback
+    │   └── portfolioPdf.ts          # Branded A4 editorial darkroom PDF contact sheet generator
     ├── components/
     │   ├── TopBar.tsx               # Three-zone editorial header navigation
     │   ├── ComparisonStage.tsx      # Interactive Before/After split slider & portrait viewport
     │   ├── RetouchPromptBar.tsx     # Natural-language retouch bar, quick cues & Sharpen slider
-    │   ├── DirectionPanel.tsx       # Backdrop, attire, framing, lighting & Advanced Lighting controls
-    │   ├── HistoryViewPanel.tsx     # Side-by-side session take grid, filters, stepper & Download All ZIP
-    │   ├── DarkroomReel.tsx         # Full-width session contact strip & batch ZIP export
+    │   ├── DirectionPanel.tsx       # Backdrop, attire, framing, lighting, bokeh & output controls
+    │   ├── HistoryViewPanel.tsx     # Side-by-side session take grid, filters, Export Portfolio PDF & Batch ZIP
+    │   ├── DarkroomReel.tsx         # Full-width session contact strip, Export Portfolio PDF & Download All ZIP
     │   ├── PortraitLightbox.tsx     # Fullscreen inspection modal with Copy to Clipboard & Download PNG
     │   ├── StyleLookbookSection.tsx # Curated style gallery & selfie capture guide
     │   └── ShortcutsModal.tsx       # Keyboard shortcut reference overlay
