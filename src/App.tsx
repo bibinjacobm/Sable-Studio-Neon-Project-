@@ -40,7 +40,7 @@ import {
 
 const INITIAL_CONFIG: StudioDirectionConfig = {
   styleId: 'corporate-grey',
-  attireId: 'charcoal-blazer',
+  attireId: 'keep-original',
   framingId: 'head-shoulders',
   lightingId: 'softbox-key',
   aspectRatio: '3:4',
