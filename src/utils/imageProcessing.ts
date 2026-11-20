@@ -1,4 +1,5 @@
-import type { SourcePortrait } from '../data/studioCatalog';
+import JSZip from 'jszip';
+import type { GeneratedTake, SourcePortrait } from '../data/studioCatalog';
 
 const ACCEPTED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_RAW_BYTES = 20 * 1024 * 1024;
@@ -74,16 +75,72 @@ export async function processSelfieFile(file: File): Promise<SourcePortrait> {
   };
 }
 
-export function downloadPortrait(imageUrl: string, frameNumber: number, styleName: string): void {
+export function buildPortraitFilename(frameNumber: number, styleName: string): string {
   const slug = styleName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)/g, '');
   const padded = String(frameNumber).padStart(2, '0');
+  return `sable-studio-frame-${padded}-${slug}.png`;
+}
+
+export function downloadPortrait(imageUrl: string, frameNumber: number, styleName: string): void {
   const link = document.createElement('a');
   link.href = imageUrl;
-  link.download = `sable-studio-frame-${padded}-${slug}.png`;
+  link.download = buildPortraitFilename(frameNumber, styleName);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<void> {
+  if (takes.length === 0) return;
+
+  const zip = new JSZip();
+  const orderedTakes = [...takes].sort((a, b) => a.frameNumber - b.frameNumber);
+  const manifestLines: string[] = [
+    'Sable Studio — Session Contact Sheet',
+    `Exported Frames: ${orderedTakes.length}`,
+    '',
+  ];
+
+  for (const take of orderedTakes) {
+    const filename = buildPortraitFilename(take.frameNumber, take.styleName);
+    const { base64 } = parseDataUrl(take.imageUrl);
+    zip.file(filename, base64, { base64: true });
+
+    const frameLabel = String(take.frameNumber).padStart(2, '0');
+    manifestLines.push(
+      `Frame ${frameLabel} · ${filename}`,
+      `  Style: ${take.styleName} | Attire: ${take.attireLabel} | Framing: ${take.framingLabel} | Lighting: ${take.lightingLabel} | Aspect: ${take.aspectRatio}`
+    );
+    if (take.retouchPrompt) {
+      manifestLines.push(`  Retouch Prompt: ${take.retouchPrompt}`);
+    }
+    if (take.directorNote) {
+      manifestLines.push(`  Darkroom Note: ${take.directorNote}`);
+    }
+    manifestLines.push('');
+  }
+
+  zip.file('contact-sheet-notes.txt', manifestLines.join('\n'));
+
+  const blob = await zip.generateAsync({
+    type: 'blob',
+    compression: 'STORE',
+  });
+
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = `sable-studio-session-${orderedTakes.length}-${
+    orderedTakes.length === 1 ? 'frame' : 'frames'
+  }.zip`;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 5000);
 }

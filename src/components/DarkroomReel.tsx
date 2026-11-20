@@ -1,6 +1,7 @@
-import React from 'react';
-import { Download, Trash2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Archive, Download, Trash2 } from 'lucide-react';
 import type { GeneratedTake } from '../data/studioCatalog';
+import { downloadAllPortraitsZip } from '../utils/imageProcessing';
 
 interface DarkroomReelProps {
   takes: GeneratedTake[];
@@ -17,23 +18,62 @@ export const DarkroomReel: React.FC<DarkroomReelProps> = ({
   onDownloadTake,
   onRemoveTake,
 }) => {
+  const [isExportingZip, setIsExportingZip] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleDownloadAll = async () => {
+    if (takes.length === 0 || isExportingZip) return;
+    setExportError(null);
+    setIsExportingZip(true);
+    try {
+      await downloadAllPortraitsZip(takes);
+    } catch (err) {
+      setExportError(
+        err instanceof Error ? err.message : 'Unable to create ZIP archive. Please try again.'
+      );
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
+
   return (
     <section
       id="reel"
       aria-label="Darkroom contact strip"
       className="mt-12 border-t border-white/[0.08] pt-10"
     >
-      <div className="mb-5 flex flex-wrap items-baseline justify-between gap-4">
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h2 className="font-serif text-3xl font-semibold text-[#F5F1E8]">Darkroom Reel</h2>
           <p className="mt-1 text-sm text-[#9B968C]">
             Every developed exposure and retouch pass from your current session
           </p>
         </div>
-        <p className="font-mono text-xs tabular-nums text-[#9B968C]">
-          {takes.length} {takes.length === 1 ? 'frame' : 'frames'} exposed
-        </p>
+
+        <div className="flex flex-wrap items-center gap-4">
+          <p className="font-mono text-xs tabular-nums text-[#9B968C]">
+            {takes.length} {takes.length === 1 ? 'frame' : 'frames'} exposed
+          </p>
+
+          {takes.length > 0 && (
+            <button
+              type="button"
+              onClick={() => void handleDownloadAll()}
+              disabled={isExportingZip}
+              className="inline-flex min-h-[38px] items-center gap-2 rounded-md border border-[#D4A853]/50 bg-[#141416] px-4 py-2 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0B0B0C] cursor-pointer"
+            >
+              <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+              <span>{isExportingZip ? 'Packing ZIP...' : 'Download All (ZIP)'}</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {exportError && (
+        <p role="alert" className="mb-4 text-xs text-amber-300">
+          {exportError}
+        </p>
+      )}
 
       {takes.length === 0 ? (
         <div className="flex flex-col items-start justify-between gap-2 rounded-xl border border-dashed border-white/[0.09] bg-[#111113] px-6 py-8 sm:flex-row sm:items-center">
