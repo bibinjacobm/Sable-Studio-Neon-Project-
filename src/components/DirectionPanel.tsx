@@ -510,7 +510,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
                   type="button"
                   onClick={() => onLightingSelect(option.id)}
                   aria-pressed={active}
-                  className={`flex min-h-[38px] items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition-colors duration-150 cursor-pointer ${
+                  className={`flex min-h-[38px] items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
                     active
                       ? 'border-[#D4A853] bg-[#D4A853]/12 text-[#F5F1E8]'
                       : 'border-white/[0.08] bg-[#0B0B0C] text-[#9B968C] hover:border-white/20 hover:text-[#F5F1E8]'
@@ -524,6 +524,13 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
               );
             })}
           </div>
+          {config.lightingId === 'professional-cinematic' && (
+            <p className="mt-2 font-mono text-[10px] leading-relaxed text-[#9B968C] tabular-nums">
+              <span className="text-[#D4A853]">3-Source Rig:</span> 45° Warm Octabox{' '}
+              <span aria-hidden="true">·</span> Cool Silk Fill <span aria-hidden="true">·</span>{' '}
+              Dual Rim
+            </p>
+          )}
         </div>
       </div>
 
@@ -680,7 +687,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
         <button
           type="button"
           onClick={onUploadClick}
-          className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-3 text-sm font-semibold text-[#0B0B0C] transition-colors duration-150 hover:bg-[#E7E0D0] cursor-pointer"
+          className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-3 text-sm font-semibold text-[#0B0B0C] whitespace-nowrap transition-colors duration-150 hover:bg-[#E7E0D0] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#141416] cursor-pointer"
         >
           <Camera className="h-4 w-4 shrink-0" aria-hidden="true" />
           <span>Upload Selfie to Begin</span>
@@ -690,11 +697,29 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
           type="button"
           onClick={onGenerate}
           disabled={isGenerating}
+          aria-busy={isGenerating}
           title="Generate Studio Headshot (G)"
-          className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-3 text-sm font-semibold text-[#0B0B0C] transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-[#9B968C] cursor-pointer"
+          className={`relative inline-flex min-h-[48px] w-full items-center justify-center gap-2 overflow-hidden rounded-md px-5 py-3 text-sm font-semibold whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] focus-visible:ring-offset-2 focus-visible:ring-offset-[#141416] ${
+            isGenerating
+              ? 'cursor-wait border border-[#D4A853]/60 bg-[#1B1812] text-[#F5F1E8] shadow-[0_0_20px_rgba(212,168,83,0.16)]'
+              : 'bg-[#F5F1E8] text-[#0B0B0C] hover:bg-[#E7E0D0] cursor-pointer'
+          }`}
         >
-          <Sparkles className="h-4 w-4 shrink-0" aria-hidden="true" />
-          <span>{isGenerating ? 'Developing Portrait...' : 'Generate Studio Headshot'}</span>
+          {isGenerating && (
+            <span
+              aria-hidden="true"
+              className="darkroom-generate-pulse pointer-events-none absolute inset-0 rounded-md bg-[radial-gradient(ellipse_at_center,rgba(212,168,83,0.28)_0%,rgba(212,168,83,0.06)_62%,transparent_100%)]"
+            />
+          )}
+          <Sparkles
+            className={`relative z-10 h-4 w-4 shrink-0 ${
+              isGenerating ? 'darkroom-icon-pulse text-[#D4A853]' : ''
+            }`}
+            aria-hidden="true"
+          />
+          <span className="relative z-10">
+            {isGenerating ? 'Developing Portrait...' : 'Generate Studio Headshot'}
+          </span>
         </button>
       )}
     </div>

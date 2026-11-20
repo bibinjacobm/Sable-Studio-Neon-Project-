@@ -935,6 +935,24 @@ function computeKeyLightMultiplier(
       delta = s * (0.18 - dist * 0.18);
       break;
     }
+    case 'professional-cinematic': {
+      // Multi-soft-source editorial envelope: primary upper-left 45° octabox + opposite soft silk fill + overhead soft strip
+      const keyDx = (nx - (faceNx - 0.13)) * 1.1;
+      const keyDy = (ny - (faceNy - 0.1)) * 1.1;
+      const keySoftbox = Math.exp(-(keyDx * keyDx + keyDy * keyDy) * 2.1);
+
+      const fillDx = (nx - (faceNx + 0.24)) * 0.95;
+      const fillDy = (ny - (faceNy + 0.08)) * 0.95;
+      const silkFill = Math.exp(-(fillDx * fillDx + fillDy * fillDy) * 1.6);
+
+      const stripDx = (nx - faceNx) * 1.35;
+      const stripDy = (ny - Math.max(0.06, faceNy - 0.26)) * 1.7;
+      const topStrip = Math.exp(-(stripDx * stripDx + stripDy * stripDy) * 2.3);
+
+      const combined = keySoftbox * 0.62 + silkFill * 0.26 + topStrip * 0.22;
+      delta = s * (combined * 0.56 - 0.12);
+      break;
+    }
     case 'softbox-key':
     default: {
       delta = s * (0.24 - dist * 0.22);
@@ -942,7 +960,7 @@ function computeKeyLightMultiplier(
     }
   }
 
-  return Math.max(0.96, Math.min(1.06, 1 + delta));
+  return Math.max(0.96, Math.min(1.08, 1 + delta));
 }
 
 export async function renderStudioHeadshot(
@@ -1063,37 +1081,59 @@ export async function renderStudioHeadshot(
     blurRgbaBuffer(bgPx, outW, outH, scaledBlurRadius);
   }
 
+  const advancedPreset = recipe.advancedLightingPreset ?? 'none';
+  const isCinematicMultiSoft =
+    recipe.lightingId === 'professional-cinematic' || advancedPreset === 'professional-cinematic';
+
+  // Subject face center in final viewport coordinates [0..1]
+  const framedFaceNx = clampUnit((anchor.faceCenterX * srcW - cropX) / Math.max(1, cropW));
+  const framedFaceNy = clampUnit((anchor.faceCenterY * srcH - cropY) / Math.max(1, cropH));
+
   // Uniform tonal grading across entire (outW x outH) backdrop plate
   const bgExposureMul = Math.pow(2, recipe.exposure * 0.42);
   const bgContrastFactor = 1 + recipe.contrast * 0.28;
   const bgSatFactor = recipe.monochrome ? 0 : Math.max(0, 1 + recipe.saturation * 0.5);
   const bgWarmShift = recipe.monochrome ? 0 : recipe.warmth * 18;
 
-  for (let i = 0; i < bgPx.length; i += 4) {
-    let r = bgPx[i] * bgExposureMul + bgWarmShift;
-    let g = bgPx[i + 1] * bgExposureMul + bgWarmShift * 0.25;
-    let b = bgPx[i + 2] * bgExposureMul - bgWarmShift * 0.8;
+  for (let y = 0; y < outH; y++) {
+    const ny = y / Math.max(1, outH - 1);
+    const row = y * outW;
+    for (let x = 0; x < outW; x++) {
+      const i = (row + x) * 4;
+      let bgLightScale = bgExposureMul;
+      if (isCinematicMultiSoft) {
+        // Subtle editorial cyclorama scrim glow behind the subject's head & shoulders
+        const bdx = (x / Math.max(1, outW - 1) - framedFaceNx) * 1.15;
+        const bdy = (ny - Math.min(0.65, framedFaceNy + 0.05)) * 1.15;
+        const scrimPool = Math.exp(-(bdx * bdx + bdy * bdy) * 2.2);
+        bgLightScale *= 0.94 + scrimPool * 0.12;
+      }
 
-    r = (r - 128) * bgContrastFactor + 128;
-    g = (g - 128) * bgContrastFactor + 128;
-    b = (b - 128) * bgContrastFactor + 128;
+      let r = bgPx[i] * bgLightScale + bgWarmShift;
+      let g = bgPx[i + 1] * bgLightScale + bgWarmShift * 0.25;
+      let b = bgPx[i + 2] * bgLightScale - bgWarmShift * 0.8;
 
-    if (recipe.monochrome) {
-      const mono = 0.3 * r + 0.59 * g + 0.11 * b;
-      r = mono;
-      g = mono;
-      b = mono;
-    } else if (bgSatFactor !== 1) {
-      const gray = 0.299 * r + 0.587 * g + 0.114 * b;
-      r = gray + (r - gray) * bgSatFactor;
-      g = gray + (g - gray) * bgSatFactor;
-      b = gray + (b - gray) * bgSatFactor;
+      r = (r - 128) * bgContrastFactor + 128;
+      g = (g - 128) * bgContrastFactor + 128;
+      b = (b - 128) * bgContrastFactor + 128;
+
+      if (recipe.monochrome) {
+        const mono = 0.3 * r + 0.59 * g + 0.11 * b;
+        r = mono;
+        g = mono;
+        b = mono;
+      } else if (bgSatFactor !== 1) {
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        r = gray + (r - gray) * bgSatFactor;
+        g = gray + (g - gray) * bgSatFactor;
+        b = gray + (b - gray) * bgSatFactor;
+      }
+
+      bgPx[i] = clampByte(r);
+      bgPx[i + 1] = clampByte(g);
+      bgPx[i + 2] = clampByte(b);
+      bgPx[i + 3] = 255;
     }
-
-    bgPx[i] = clampByte(r);
-    bgPx[i + 1] = clampByte(g);
-    bgPx[i + 2] = clampByte(b);
-    bgPx[i + 3] = 255;
   }
 
   // -------------------------------------------------------------------------
@@ -1104,28 +1144,24 @@ export async function renderStudioHeadshot(
   const outImageData = outCtx.createImageData(outW, outH);
   const outPx = outImageData.data;
 
-  const advancedPreset = recipe.advancedLightingPreset ?? 'none';
-
   const [rimR, rimG, rimB] =
-    advancedPreset === 'golden-hour'
-      ? [255, 206, 126]
-      : advancedPreset === 'noir-high-contrast'
-        ? [246, 246, 246]
-        : advancedPreset === 'soft-diffused'
-          ? [248, 245, 240]
-          : recipe.lightingId === 'golden-rim'
-            ? [255, 212, 140]
-            : recipe.monochrome
-              ? [240, 240, 240]
-              : style.rimRgb;
+    advancedPreset === 'professional-cinematic'
+      ? [252, 226, 184]
+      : advancedPreset === 'golden-hour'
+        ? [255, 206, 126]
+        : advancedPreset === 'noir-high-contrast'
+          ? [246, 246, 246]
+          : advancedPreset === 'soft-diffused'
+            ? [248, 245, 240]
+            : recipe.lightingId === 'golden-rim'
+              ? [255, 212, 140]
+              : recipe.monochrome
+                ? [240, 240, 240]
+                : style.rimRgb;
 
   const exposureMul = Math.pow(2, recipe.exposure * 0.85);
   const contrastFactor = 1 + recipe.contrast * 0.64;
   const satFactor = recipe.monochrome ? 0 : Math.max(0, 1 + recipe.saturation);
-
-  // Subject face center in final viewport coordinates [0..1]
-  const framedFaceNx = clampUnit((anchor.faceCenterX * srcW - cropX) / Math.max(1, cropW));
-  const framedFaceNy = clampUnit((anchor.faceCenterY * srcH - cropY) / Math.max(1, cropH));
 
   const applyVignette = recipe.vignette > 0.01;
   const grainAmp = recipe.grain > 0.01 ? recipe.grain * 16 : 0;
@@ -1193,8 +1229,47 @@ export async function renderStudioHeadshot(
         fg = (fg - 128) * localContrast + 128;
         fb = (fb - 128) * localContrast + 128;
 
+        // Multi-soft-source editorial modeling (warm 45° key + cool opposite silk bounce fill)
+        if (isCinematicMultiSoft) {
+          const preLum = Math.max(0, Math.min(1, (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255));
+          const keyDx = (nx - (framedFaceNx - 0.14)) * 1.1;
+          const keyDy = (ny - (framedFaceNy - 0.1)) * 1.1;
+          const warmKeyWrap = Math.exp(-(keyDx * keyDx + keyDy * keyDy) * 2.2);
+
+          const fillDx = (nx - (framedFaceNx + 0.24)) * 0.95;
+          const fillDy = (ny - (framedFaceNy + 0.08)) * 0.95;
+          const coolSilkFill = Math.exp(-(fillDx * fillDx + fillDy * fillDy) * 1.65);
+
+          // Lift shadow-side cheek gently with opposite soft silk fill
+          const shadowLift = Math.max(0, 1 - preLum * 1.38) * coolSilkFill * 12;
+          fr += shadowLift * 0.88;
+          fg += shadowLift * 0.98;
+          fb += shadowLift * 1.14;
+
+          if (!recipe.monochrome) {
+            // Subtle warm tungsten-daylight key wrap on highlights
+            const keyHighlight = Math.max(0, preLum - 0.25) * warmKeyWrap * 8.5;
+            fr += keyHighlight;
+            fg += keyHighlight * 0.42;
+            fb -= keyHighlight * 0.35;
+          }
+        }
+
         // Uniform creative tonal shaping for Advanced Lighting presets
-        if (advancedPreset === 'golden-hour') {
+        if (advancedPreset === 'professional-cinematic') {
+          // Filmic editorial S-curve: velvety shadow toe + smooth highlight shoulder rolloff
+          const cLum = Math.max(0, Math.min(1, (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255));
+          let mapped = cLum;
+          if (cLum < 0.5) {
+            mapped = 0.018 + 0.482 * Math.pow(cLum * 2, 1.09);
+          } else {
+            mapped = 1 - 0.5 * Math.pow((1 - cLum) * 2, 1.12);
+          }
+          const ratio = cLum > 0.004 ? mapped / cLum : 1;
+          fr *= ratio;
+          fg *= ratio;
+          fb *= ratio;
+        } else if (advancedPreset === 'golden-hour') {
           const warmLift = Math.max(0, (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255 - 0.35);
           fr += warmLift * 14;
           fg += warmLift * 6;
@@ -1235,11 +1310,27 @@ export async function renderStudioHeadshot(
 
           const upperBias = Math.max(0.25, 1.08 - ny * 0.8);
           const rimPower =
-            edgeFactor * recipe.rimLight * 0.58 * upperBias * (0.45 + hairWeight * 0.55);
+            edgeFactor *
+            recipe.rimLight *
+            (isCinematicMultiSoft ? 0.66 : 0.58) *
+            upperBias *
+            (0.45 + hairWeight * 0.55);
 
-          fr += (rimR - fr) * rimPower * 0.44;
-          fg += (rimG - fg) * rimPower * 0.44;
-          fb += (rimB - fb) * rimPower * 0.44;
+          let activeRimR = rimR;
+          let activeRimG = rimG;
+          let activeRimB = rimB;
+          if (isCinematicMultiSoft && !recipe.monochrome) {
+            // Dual-source rim kicker: warm champagne on key side smoothly blending to cool ivory on fill side
+            const sideT = clampUnit((nx - framedFaceNx + 0.16) / 0.32);
+            const smoothSide = sideT * sideT * (3 - 2 * sideT);
+            activeRimR = 254 * (1 - smoothSide) + 226 * smoothSide;
+            activeRimG = 224 * (1 - smoothSide) + 236 * smoothSide;
+            activeRimB = 178 * (1 - smoothSide) + 248 * smoothSide;
+          }
+
+          fr += (activeRimR - fr) * rimPower * 0.44;
+          fg += (activeRimG - fg) * rimPower * 0.44;
+          fb += (activeRimB - fb) * rimPower * 0.44;
         }
 
         if (recipe.monochrome) {

@@ -53,6 +53,40 @@
   animation: exposureSweep 2.4s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
+@keyframes darkroomGeneratePulse {
+  0%,
+  100% {
+    opacity: 0.22;
+    transform: scale(0.985);
+  }
+  50% {
+    opacity: 0.72;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes darkroomIconPulse {
+  0%,
+  100% {
+    opacity: 0.65;
+    transform: scale(0.94);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+.darkroom-generate-pulse {
+  animation: darkroomGeneratePulse 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: opacity, transform;
+}
+
+.darkroom-icon-pulse {
+  animation: darkroomIconPulse 1.9s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  will-change: opacity, transform;
+}
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -60,6 +94,16 @@
   .exposure-sweep {
     animation: none;
     opacity: 0.35;
+  }
+  .darkroom-generate-pulse {
+    animation: none;
+    opacity: 0.45;
+    transform: none;
+  }
+  .darkroom-icon-pulse {
+    animation: none;
+    opacity: 1;
+    transform: none;
   }
 }
 

@@ -1,6 +1,5 @@
 import React from 'react';
 import { Upload } from 'lucide-react';
-import { SessionTimer } from './SessionTimer';
 
 interface TopBarProps {
   onUploadClick: () => void;
@@ -48,8 +47,7 @@ export const TopBar: React.FC<TopBarProps> = ({ onUploadClick, hasReelItems }) =
           </a>
         </nav>
 
-        <div className="flex items-center gap-2.5 shrink-0 sm:gap-3">
-          <SessionTimer />
+        <div className="flex items-center shrink-0">
           <button
             type="button"
             onClick={onUploadClick}

@@ -453,7 +453,7 @@ export async function exportPortfolioPdf(
       const subjectProfile = getSubjectProfileById(recipe.subjectProfile);
       const aperture = formatApertureFromBlur(recipe.backdropBlur);
       const lightingBase =
-        advancedPreset.id !== 'none'
+        advancedPreset.id !== 'none' && take.lightingLabel !== advancedPreset.label
           ? `${take.lightingLabel} (${advancedPreset.label})`
           : take.lightingLabel;
       const lightingSpec = `${lightingBase} · ${subjectProfile.label}`;

@@ -17,7 +17,7 @@
 - **Wardrobe & Attire Tone**: Keep Original, Charcoal Suit Tone, Crisp Ivory Tone, Obsidian Knit Tone, or Executive Navy Tone.
 - **Target Subject Type Profiles**: Toggle between **Masculine**, **Feminine**, and **Androgynous** framing and lighting bias profiles to steer both on-device darkroom sculpting (contrast, key/fill ratio, rim separation, warmth, and vertical framing poise) and the AI portrait director's calibration.
 - **Lens Framing, Visual Crop Previews, Smart Crop & Output Formats**: Tight Headshot (`85mm`), Head & Shoulders (`85mm`), or Mid-Chest Editorial (`50mm`)—each paired with an optical viewfinder crop-area preview icon illustrating the head, shoulder, and upper-torso framing—across `3:4` (Press & Bio), `1:1` (LinkedIn & Avatar), and `4:3` (Website Feature) aspect ratios, alongside a **Smart Crop** toggle that analyzes detected facial alignment (eye line, face scale, and headroom) to auto-select the optimal framing and subtle zoom/vertical offset.
-- **Lighting Setup & Advanced Lighting Presets**: Choose from Softbox Studio Key, Rembrandt Dramatic, Golden Hour Rim, or Diffused Window, plus creative **Advanced Lighting** overrides (**Golden Hour**, **Noir High-Contrast**, and **Soft Diffused**).
+- **Lighting Setup & Advanced Lighting Presets**: Choose from Softbox Studio Key, Rembrandt Dramatic, Golden Hour Rim, Diffused Window, or **Professional Cinematic** (a multi-source soft editorial rig combining a 45° warm octabox key, opposite cool silk fill, overhead soft strip, cyclorama backdrop glow, and dual rim kickers), plus creative **Advanced Lighting** overrides (**Professional Cinematic**, **Golden Hour**, **Noir High-Contrast**, and **Soft Diffused**).
 - **Depth of Field (`Bokeh` Slider)**: Adjust optical background blur (`0–20px`, mapped to `f/11`–`f/1.4` aperture readouts) in real time using the cached neural segmentation masks to blur the backdrop cleanly while keeping your portrait subject razor-sharp.
 
 ### Darkroom Workbench & Retouching
@@ -29,13 +29,12 @@
 - **Local Unsharp Masking (`Sharpen` Slider)**: Non-destructive luminance-guided unsharp masking (`0%–100%`) applied directly via the 2D canvas engine, reinforcing micro-contrast on eyes, hair, and edges while protecting smooth skin and backdrop bokeh.
 
 ### Session Management & Professional Exports
-- **Side-by-Side Session History Panel**: Switch between **Direction** and **History** right beside the stage to toggle takes instantly, peek between **Source** (original input selfie) and **Result** (generated studio portrait) directly inside each thumbnail card, filter by `All` or `Retouched`, reverse chronological order (`Newest` / `Oldest`), step through frames, inspect, download, or delete.
+- **Side-by-Side Session History Panel & Interactive Session Timeline**: Switch between **Direction** and **History** right beside the stage to toggle takes instantly, peek between **Source** (original input selfie) and **Result** (generated studio portrait) directly inside each thumbnail card, filter by `All` or `Retouched`, reverse chronological order (`Newest` / `Oldest`), step through frames, inspect, download, or delete. Includes a collapsible **Session Timeline** plotting every generation and retouch pass chronologically across **Exposure**, **Contrast**, **Bokeh**, and **Warmth** curves with direct pointer scrubbing, range slider, **Play / Pause** walkthrough, and per-take parameter evolution deltas (`Changed from Take N-1`).
 - **Darkroom Reel Contact Strip**: Full-width session contact strip at the bottom of the workspace with frame numbering and per-frame actions.
 - **Fullscreen Portrait Lightbox**: High-resolution inspection modal with original/studio toggle, **Download PNG**, and one-click **Copy to Clipboard** (`image/png` `ClipboardItem`) for pasting directly into Slack, Teams, or email.
 - **Embedded EXIF Metadata**: Every downloaded portrait (single PNG or inside ZIP archives) embeds spec-compliant TIFF 6.0 / EXIF 2.32 metadata (`eXIf` + `tEXt` chunks for PNG; `APP1` segment for JPEG) recording **Sable Studio** branding (`Make`, `Software`, `Artist`, `Copyright`) and the frame's style, lighting, framing, attire, aspect ratio, and retouch tags (`ImageDescription`, `Model`, `UserComment`, `DateTimeOriginal`).
 - **Selective Batch Export & Compressed ZIP Archives**: Toggle **Batch Export** mode inside the Session History panel to multi-select specific takes (with `Select All` / `Select Visible` and `Clear` controls) and bundle them into a single DEFLATE-compressed ZIP archive alongside `generation-parameters-summary.txt` detailing every take's style, wardrobe, framing, Smart Crop status, lighting, tonal calibration, optics, facial anchor, and retouch notes—or use **Download All** to archive the entire session in one click.
 - **Branded PDF Portfolio Contact Sheet (`Export Portfolio`)**: Aggregate selected takes from the Session History panel (or export the full session from the Darkroom Reel) into a multi-page, A4 Editorial Darkroom PDF contact sheet (`sable-studio-portfolio-*.pdf`) with an optional custom portfolio cover title, side-by-side **Before (Original)** vs. **After (Studio Portrait)** comparison spreads (aspect-preserved and deduplicated), and full generation metadata and styling parameters (style, wardrobe, framing, Smart Crop, lighting & advanced preset, Depth of Field aperture, tonal calibration, finish metrics, facial anchor, and wrapped retouch/director notes).
-- **Studio Session Countdown Timer**: Built-in focus countdown timer in the TopBar with drift-resistant ticking, one-click start/pause, quick duration presets (`15m`, `25m`, `45m`, `60m`), custom duration input (`1–180` minutes, persisted across reloads), `+5m` session extension, elapsed progress bar, and a toggleable completion chime.
 
 ---
 
@@ -154,7 +153,6 @@ NODE_ENV=production npm start
     │   └── portfolioPdf.ts          # Branded A4 editorial darkroom PDF contact sheet generator
     ├── components/
     │   ├── TopBar.tsx               # Editorial header navigation & Upload Selfie action
-    │   ├── SessionTimer.tsx         # Studio session countdown timer with custom duration & presets
     │   ├── ComparisonStage.tsx      # Interactive draggable Before/After swipe stage & overlays
     │   ├── EditorialLightingGuideOverlay.tsx # Real-time physical posture & light-source coaching overlay
     │   ├── LightingCompassOverlay.tsx # Studio light-source direction compass & angle adjustment guide
@@ -164,6 +162,7 @@ NODE_ENV=production npm start
     │   ├── RetouchPromptBar.tsx     # Natural-language retouch bar, quick cues & Sharpen slider
     │   ├── DirectionPanel.tsx       # Backdrop, attire, framing, lighting, bokeh & output controls
     │   ├── HistoryViewPanel.tsx     # Side-by-side session take grid, filters, Export Portfolio PDF & Batch ZIP
+    │   ├── SessionTimeline.tsx      # Chronological session timeline plot, scrubber, playback & parameter evolution diff
     │   ├── DarkroomReel.tsx         # Full-width session contact strip, Export Portfolio PDF & Download All ZIP
     │   ├── PortraitLightbox.tsx     # Fullscreen inspection modal with Copy to Clipboard & Download PNG
     │   ├── StyleLookbookSection.tsx # Curated style gallery & selfie capture guide

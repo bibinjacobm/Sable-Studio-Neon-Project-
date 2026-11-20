@@ -249,7 +249,7 @@ app.post('/api/headshots/plan', async (req, res) => {
           },
           {
             text: `You are a master portrait darkroom colorist and camera operator calibrating a studio headshot transform.
-Inspect this uploaded selfie and return precise calibration parameters for compositing the subject onto the "${safeStyle.name}" studio backdrop with "${safeLighting.label}" lighting and "${safeFraming.label}" framing.
+Inspect this uploaded selfie and return precise calibration parameters for compositing the subject onto the "${safeStyle.name}" studio backdrop with "${safeLighting.label}" lighting${safeAdvancedPreset.id !== 'none' ? ` (${safeAdvancedPreset.label}: ${safeAdvancedPreset.description})` : ''} and "${safeFraming.label}" framing.
 Target Subject Profile: ${safeSubjectProfile.promptDirection}${trimmedNotes ? `\nAdditional client direction: "${trimmedNotes}".` : ''}
 
 Return:
@@ -548,6 +548,9 @@ function applyHeuristicRetouch(prompt: string, current: DarkroomRecipe): Darkroo
     next.contrast = Math.max(-0.15, next.contrast - 0.07);
     next.keyLightStrength = Math.max(0.25, next.keyLightStrength - 0.15);
     next.sharpen = 0;
+  }
+  if (lower.includes('cinematic') || lower.includes('multi-soft') || lower.includes('multi-source')) {
+    Object.assign(next, applyAdvancedLightingPreset(next, 'professional-cinematic'));
   }
   if (lower.includes('warm') || lower.includes('golden') || lower.includes('sunset')) {
     next.warmth = Math.min(0.32, next.warmth + 0.12);

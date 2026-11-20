@@ -21,6 +21,7 @@ import {
   downloadBatchPortraitsZip,
 } from '../utils/imageProcessing';
 import { exportPortfolioPdf } from '../utils/portfolioPdf';
+import { SessionTimeline } from './SessionTimeline';
 
 type HistoryFilter = 'all' | 'retouched';
 type HistorySortOrder = 'newest' | 'oldest';
@@ -449,6 +450,15 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                 </button>
               </div>
             </div>
+          )}
+
+          {/* Session Timeline: Chronological Parameter Evolution & Scrubber */}
+          {!isBatchMode && (
+            <SessionTimeline
+              takes={takes}
+              activeTakeId={activeTakeId}
+              onSelectTake={onSelectTake}
+            />
           )}
 
           {/* Filter, Sort & Quick Take Stepper Toolbar */}

@@ -19,10 +19,12 @@ export type LightingId =
   | 'softbox-key'
   | 'rembrandt'
   | 'golden-rim'
-  | 'diffused-window';
+  | 'diffused-window'
+  | 'professional-cinematic';
 
 export type AdvancedLightingPresetId =
   | 'none'
+  | 'professional-cinematic'
   | 'golden-hour'
   | 'noir-high-contrast'
   | 'soft-diffused';
@@ -341,6 +343,7 @@ export const LIGHTING_OPTIONS: StudioControlOption<LightingId>[] = [
   { id: 'rembrandt', label: 'Rembrandt Dramatic', shortSpec: 'Sculpted shadow' },
   { id: 'golden-rim', label: 'Golden Hour Rim', shortSpec: 'Warm backlit' },
   { id: 'diffused-window', label: 'Diffused Window', shortSpec: 'Natural directional' },
+  { id: 'professional-cinematic', label: 'Professional Cinematic', shortSpec: 'Multi-soft' },
 ];
 
 export interface AdvancedLightingPresetOption {
@@ -355,6 +358,13 @@ export const ADVANCED_LIGHTING_PRESETS: AdvancedLightingPresetOption[] = [
     id: 'none',
     label: 'Default Studio Balance',
     description: 'Uses your selected style and lighting setup without extra tonal overrides.',
+  },
+  {
+    id: 'professional-cinematic',
+    label: 'Professional Cinematic',
+    description:
+      'Multi-source editorial rig combining a 45° warm softbox key, cool opposite silk fill, overhead soft strip, and dual rim separation.',
+    targetLightingId: 'professional-cinematic',
   },
   {
     id: 'golden-hour',
@@ -507,6 +517,21 @@ export function applyAdvancedLightingPreset(
   }
 
   switch (safePreset) {
+    case 'professional-cinematic':
+      return {
+        ...recipe,
+        advancedLightingPreset: 'professional-cinematic',
+        lightingId: 'professional-cinematic',
+        monochrome: false,
+        exposure: Math.min(0.24, Math.max(0.05, recipe.exposure + 0.04)),
+        contrast: Math.min(0.24, Math.max(0.1, recipe.contrast + 0.06)),
+        warmth: Math.min(0.18, Math.max(0.04, recipe.warmth + 0.05)),
+        saturation: Math.min(0.1, Math.max(-0.08, recipe.saturation + 0.02)),
+        rimLight: Math.max(0.76, recipe.rimLight),
+        keyLightStrength: Math.max(0.68, recipe.keyLightStrength),
+        vignette: Math.min(0.42, Math.max(0.28, recipe.vignette + 0.04)),
+        grain: Math.max(0.09, Math.min(0.14, recipe.grain + 0.02)),
+      };
     case 'golden-hour':
       return {
         ...recipe,

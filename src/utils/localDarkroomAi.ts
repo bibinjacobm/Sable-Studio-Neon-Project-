@@ -1,4 +1,5 @@
 import {
+  applyAdvancedLightingPreset,
   buildDefaultRecipe,
   getFramingById,
   suggestSmartCrop,
@@ -453,6 +454,10 @@ export function applyRetouchLocally(
     next.keyLightStrength = Math.max(0.25, next.keyLightStrength - 0.12);
     next.sharpen = 0;
     notes.push('softer skin & shadow rolloff');
+  }
+  if (lower.includes('cinematic') || lower.includes('multi-soft') || lower.includes('multi-source')) {
+    Object.assign(next, applyAdvancedLightingPreset(next, 'professional-cinematic'));
+    notes.push('Professional Cinematic multi-soft lighting');
   }
   if (lower.includes('warm') || lower.includes('golden') || lower.includes('sunset')) {
     next.warmth = Math.min(0.28, next.warmth + 0.1);

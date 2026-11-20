@@ -693,7 +693,10 @@ export function evaluateLightingCompassAlignment(
   let targetAngleDeg = 325;
   let targetLabel = 'Softbox Upper-Left';
 
-  if (advancedPreset === 'golden-hour') {
+  if (advancedPreset === 'professional-cinematic') {
+    targetAngleDeg = 318;
+    targetLabel = 'Cinematic Multi-Soft Key';
+  } else if (advancedPreset === 'golden-hour') {
     targetAngleDeg = 42;
     targetLabel = 'Golden Hour Upper-Right';
   } else if (advancedPreset === 'noir-high-contrast') {
@@ -704,6 +707,10 @@ export function evaluateLightingCompassAlignment(
     targetLabel = 'Soft Diffused Front';
   } else {
     switch (lightingId) {
+      case 'professional-cinematic':
+        targetAngleDeg = 318;
+        targetLabel = 'Cinematic Multi-Soft Key';
+        break;
       case 'rembrandt':
         targetAngleDeg = 312;
         targetLabel = 'Rembrandt 45° Left';

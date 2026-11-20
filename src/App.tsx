@@ -410,8 +410,14 @@ export default function App() {
         framingId: nextRecipe.framingId,
         smartCrop: Boolean(nextRecipe.smartCrop),
         lightingId: nextRecipe.lightingId,
+        advancedLightingPreset: nextRecipe.advancedLightingPreset ?? 'none',
         backdropBlur: Math.round(nextRecipe.backdropBlur),
       }));
+
+      const resolvedRetouchLightingLabel =
+        nextRecipe.advancedLightingPreset && nextRecipe.advancedLightingPreset !== 'none'
+          ? getAdvancedLightingPresetById(nextRecipe.advancedLightingPreset).label
+          : getLightingById(nextRecipe.lightingId).label;
 
       frameCounterRef.current += 1;
       const newTake: GeneratedTake = {
@@ -425,7 +431,7 @@ export default function App() {
         styleName: getStyleById(nextRecipe.styleId).name,
         attireLabel: getAttireById(nextRecipe.attireId).label,
         framingLabel: getFramingById(nextRecipe.framingId).label,
-        lightingLabel: getLightingById(nextRecipe.lightingId).label,
+        lightingLabel: resolvedRetouchLightingLabel,
         aspectRatio: nextRecipe.aspectRatio,
         recipe: nextRecipe,
         anchor: activeTake.anchor,
