@@ -2,6 +2,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import {
   Download,
   Expand,
+  History,
   MoveHorizontal,
   RefreshCw,
   SlidersHorizontal,
@@ -25,8 +26,11 @@ interface ComparisonStageProps {
   generationPhase: string;
   isAnalyzing: boolean;
   elapsedSeconds: number;
+  takesCount: number;
+  isHistoryOpen: boolean;
   onCompareModeChange: (mode: CompareViewMode) => void;
   onSliderChange: (position: number) => void;
+  onToggleHistory: () => void;
   onFileSelected: (file: File) => void;
   onOpenFilePicker: () => void;
   onAnalyzeSelfie: () => void;
@@ -44,8 +48,11 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   generationPhase,
   isAnalyzing,
   elapsedSeconds,
+  takesCount,
+  isHistoryOpen,
   onCompareModeChange,
   onSliderChange,
+  onToggleHistory,
   onFileSelected,
   onOpenFilePicker,
   onAnalyzeSelfie,
@@ -193,6 +200,28 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 </button>
               ))}
             </div>
+          )}
+
+          {takesCount > 0 && (
+            <button
+              type="button"
+              onClick={onToggleHistory}
+              aria-pressed={isHistoryOpen}
+              className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                isHistoryOpen
+                  ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                  : 'border-white/[0.09] bg-[#141416] text-[#F5F1E8] hover:border-white/25 hover:bg-[#1C1C1F]'
+              }`}
+            >
+              <History
+                className={`h-3.5 w-3.5 shrink-0 ${isHistoryOpen ? 'text-[#D4A853]' : ''}`}
+                aria-hidden="true"
+              />
+              <span>History</span>
+              <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
+                {takesCount}
+              </span>
+            </button>
           )}
 
           {activeTake && (

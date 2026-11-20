@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertCircle, X } from 'lucide-react';
+import { AlertCircle, History, SlidersHorizontal, X } from 'lucide-react';
 import {
   buildDefaultRecipe,
   getAttireById,
@@ -22,10 +22,15 @@ import { TopBar } from './components/TopBar';
 import { ComparisonStage, type CompareViewMode } from './components/ComparisonStage';
 import { RetouchPromptBar } from './components/RetouchPromptBar';
 import { DirectionPanel } from './components/DirectionPanel';
+import { HistoryViewPanel } from './components/HistoryViewPanel';
 import { DarkroomReel } from './components/DarkroomReel';
 import { StyleLookbookSection } from './components/StyleLookbookSection';
 import { PortraitLightbox } from './components/PortraitLightbox';
-import { downloadPortrait, processSelfieFile } from './utils/imageProcessing';
+import {
+  buildTakeExifMetadata,
+  downloadPortrait,
+  processSelfieFile,
+} from './utils/imageProcessing';
 import {
   renderStudioHeadshot,
   segmentSelfie,
@@ -74,7 +79,9 @@ export default function App() {
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState<boolean>(false);
+  const [rightPanelMode, setRightPanelMode] = useState<'direction' | 'history'>('direction');
 
+  const rightPanelRef = useRef<HTMLElement | null>(null);
   const frameCounterRef = useRef<number>(0);
 
   const selectedStyle = useMemo(() => getStyleById(config.styleId), [config.styleId]);
@@ -352,6 +359,39 @@ export default function App() {
     }
   };
 
+  const handleSelectTake = (id: string) => {
+    setActiveTakeId(id);
+    const found = takes.find((t) => t.id === id);
+    if (found) {
+      setCompareMode('after');
+      setConfig((prev) => ({
+        ...prev,
+        styleId: found.recipe.styleId,
+        attireId: found.recipe.attireId,
+        framingId: found.recipe.framingId,
+        lightingId: found.recipe.lightingId,
+        aspectRatio: found.recipe.aspectRatio,
+      }));
+    }
+  };
+
+  const handleInspectTake = (id: string) => {
+    handleSelectTake(id);
+    setLightboxOpen(true);
+  };
+
+  const handleToggleHistoryPanel = () => {
+    setRightPanelMode((prev) => {
+      const next = prev === 'history' ? 'direction' : 'history';
+      if (next === 'history' && window.innerWidth < 1024) {
+        window.requestAnimationFrame(() => {
+          rightPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      }
+      return next;
+    });
+  };
+
   const handleRemoveTake = (id: string) => {
     setTakes((prev) => {
       const next = prev.filter((item) => item.id !== id);
@@ -363,7 +403,7 @@ export default function App() {
   };
 
   const handleDownloadTake = (take: GeneratedTake) => {
-    downloadPortrait(take.imageUrl, take.frameNumber, take.styleName);
+    downloadPortrait(take.imageUrl, take.frameNumber, take.styleName, buildTakeExifMetadata(take));
   };
 
   return (
@@ -438,8 +478,11 @@ export default function App() {
               generationPhase={generationPhase}
               isAnalyzing={isAnalyzing}
               elapsedSeconds={elapsedSeconds}
+              takesCount={takes.length}
+              isHistoryOpen={rightPanelMode === 'history'}
               onCompareModeChange={setCompareMode}
               onSliderChange={setSliderPosition}
+              onToggleHistory={handleToggleHistoryPanel}
               onFileSelected={(file) => void handleFileSelected(file)}
               onOpenFilePicker={openFilePicker}
               onAnalyzeSelfie={() => void handleAnalyzeSelfie()}
@@ -458,32 +501,102 @@ export default function App() {
           </div>
 
           <div className="lg:col-span-5">
-            <DirectionPanel
-              config={config}
-              sourcePortrait={sourcePortrait}
-              critique={critique}
-              isGenerating={isGenerating}
-              isAnalyzing={isAnalyzing}
-              onStyleSelect={handleStyleSelect}
-              onAttireSelect={(attireId: AttireId) =>
-                setConfig((prev) => ({ ...prev, attireId }))
+            <aside
+              ref={rightPanelRef}
+              aria-label={
+                rightPanelMode === 'history'
+                  ? 'Session headshot history panel'
+                  : 'Studio direction controls'
               }
-              onFramingSelect={(framingId: FramingId) =>
-                setConfig((prev) => ({ ...prev, framingId }))
-              }
-              onLightingSelect={(lightingId: LightingId) =>
-                setConfig((prev) => ({ ...prev, lightingId }))
-              }
-              onAspectRatioSelect={(aspectRatio: AspectRatioOption) =>
-                setConfig((prev) => ({ ...prev, aspectRatio }))
-              }
-              onExtraNotesChange={(extraNotes: string) =>
-                setConfig((prev) => ({ ...prev, extraNotes }))
-              }
-              onApplyCritique={handleApplyCritique}
-              onGenerate={() => void handleGenerateHeadshot()}
-              onUploadClick={openFilePicker}
-            />
+              className="flex flex-col gap-5 rounded-xl border border-white/[0.08] bg-[#141416] p-5 sm:p-6"
+            >
+              {/* Workbench Mode Switcher: Studio Direction / Session History */}
+              <div
+                role="tablist"
+                aria-label="Workbench panel view"
+                className="grid grid-cols-2 gap-1 rounded-lg border border-white/[0.08] bg-[#0B0B0C] p-1"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightPanelMode === 'direction'}
+                  onClick={() => setRightPanelMode('direction')}
+                  className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                    rightPanelMode === 'direction'
+                      ? 'bg-[#26262B] text-[#F5F1E8]'
+                      : 'text-[#9B968C] hover:text-[#F5F1E8]'
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>Direction</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={rightPanelMode === 'history'}
+                  onClick={() => setRightPanelMode('history')}
+                  className={`inline-flex min-h-[38px] items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                    rightPanelMode === 'history'
+                      ? 'bg-[#26262B] text-[#F5F1E8]'
+                      : 'text-[#9B968C] hover:text-[#F5F1E8]'
+                  }`}
+                >
+                  <History
+                    className={`h-3.5 w-3.5 shrink-0 ${
+                      rightPanelMode === 'history' ? 'text-[#D4A853]' : ''
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span>History</span>
+                  {takes.length > 0 && (
+                    <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
+                      {takes.length}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {rightPanelMode === 'history' ? (
+                <HistoryViewPanel
+                  takes={takes}
+                  activeTakeId={activeTakeId}
+                  hasSourcePortrait={Boolean(sourcePortrait)}
+                  onSelectTake={handleSelectTake}
+                  onInspectTake={handleInspectTake}
+                  onDownloadTake={handleDownloadTake}
+                  onRemoveTake={handleRemoveTake}
+                  onReturnToDirection={() => setRightPanelMode('direction')}
+                  onUploadClick={openFilePicker}
+                />
+              ) : (
+                <DirectionPanel
+                  config={config}
+                  sourcePortrait={sourcePortrait}
+                  critique={critique}
+                  isGenerating={isGenerating}
+                  isAnalyzing={isAnalyzing}
+                  onStyleSelect={handleStyleSelect}
+                  onAttireSelect={(attireId: AttireId) =>
+                    setConfig((prev) => ({ ...prev, attireId }))
+                  }
+                  onFramingSelect={(framingId: FramingId) =>
+                    setConfig((prev) => ({ ...prev, framingId }))
+                  }
+                  onLightingSelect={(lightingId: LightingId) =>
+                    setConfig((prev) => ({ ...prev, lightingId }))
+                  }
+                  onAspectRatioSelect={(aspectRatio: AspectRatioOption) =>
+                    setConfig((prev) => ({ ...prev, aspectRatio }))
+                  }
+                  onExtraNotesChange={(extraNotes: string) =>
+                    setConfig((prev) => ({ ...prev, extraNotes }))
+                  }
+                  onApplyCritique={handleApplyCritique}
+                  onGenerate={() => void handleGenerateHeadshot()}
+                  onUploadClick={openFilePicker}
+                />
+              )}
+            </aside>
           </div>
         </div>
 
@@ -491,21 +604,7 @@ export default function App() {
         <DarkroomReel
           takes={takes}
           activeTakeId={activeTakeId}
-          onSelectTake={(id) => {
-            setActiveTakeId(id);
-            const found = takes.find((t) => t.id === id);
-            if (found) {
-              setCompareMode('after');
-              setConfig((prev) => ({
-                ...prev,
-                styleId: found.recipe.styleId,
-                attireId: found.recipe.attireId,
-                framingId: found.recipe.framingId,
-                lightingId: found.recipe.lightingId,
-                aspectRatio: found.recipe.aspectRatio,
-              }));
-            }
-          }}
+          onSelectTake={handleSelectTake}
           onDownloadTake={handleDownloadTake}
           onRemoveTake={handleRemoveTake}
         />

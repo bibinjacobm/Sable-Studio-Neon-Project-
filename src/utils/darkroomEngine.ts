@@ -24,6 +24,15 @@ export interface RenderedHeadshotResult {
   alignedSourceUrl: string;
 }
 
+interface ViewportCropRect {
+  cropX: number;
+  cropY: number;
+  cropW: number;
+  cropH: number;
+}
+
+const MAX_SEGMENTER_DIMENSION = 512;
+
 let segmenterPromise: Promise<ImageSegmenter | null> | null = null;
 const backdropCache = new Map<string, Promise<HTMLImageElement>>();
 
@@ -53,7 +62,7 @@ async function getSegmenter(): Promise<ImageSegmenter | null> {
     ];
 
     // Prefer CPU (WASM SIMD) first for single-image segmentation: bit-exact across all GPUs/browsers
-    // and avoids WebGL2 FBO texture-stride readback bugs that can corrupt half of a float mask.
+    // and avoids WebGL2 FBO float-readback bugs that can corrupt half of a confidence mask.
     for (const wasmPath of wasmPaths) {
       for (const delegate of ['CPU', 'GPU'] as const) {
         try {
@@ -93,6 +102,9 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 
   if (src.startsWith('/src/assets/')) {
     backdropCache.set(src, promise);
+    promise.catch(() => {
+      backdropCache.delete(src);
+    });
   }
   return promise;
 }
@@ -101,10 +113,130 @@ function clampByte(v: number): number {
   return v < 0 ? 0 : v > 255 ? 255 : Math.round(v);
 }
 
+function clampUnit(v: number): number {
+  if (!Number.isFinite(v)) return 0;
+  return v < 0 ? 0 : v > 1 ? 1 : v;
+}
+
 /**
- * Resample a 2D float mask cleanly onto exact target dimensions (dstW x dstH)
- * using bilinear interpolation so mask arrays always match source canvas pixels 1:1.
+ * Create a clean 2D canvas with explicit integer pixel dimensions and reset state
+ * (identity transform, source-over compositing, full opacity, no filter/clipping).
  */
+function createCleanCanvas(
+  width: number,
+  height: number
+): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  const safeW = Math.max(1, Math.round(width));
+  const safeH = Math.max(1, Math.round(height));
+  const canvas = document.createElement('canvas');
+  canvas.width = safeW;
+  canvas.height = safeH;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) {
+    throw new Error('Canvas 2D context unavailable.');
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  return { canvas, ctx };
+}
+
+/**
+ * Rasterize the uploaded source image at its exact natural pixel dimensions (srcW x srcH).
+ */
+function rasterizeSourceCanvas(img: HTMLImageElement): HTMLCanvasElement {
+  const srcW = Math.max(1, img.naturalWidth || img.width);
+  const srcH = Math.max(1, img.naturalHeight || img.height);
+  const { canvas, ctx } = createCleanCanvas(srcW, srcH);
+  ctx.drawImage(img, 0, 0, srcW, srcH);
+  return canvas;
+}
+
+/**
+ * Build a 4-pixel-aligned intermediate canvas (max 512px) for MediaPipe inference.
+ * Keeps WebGL/WASM texture row strides 16-byte aligned and prevents large-FBO
+ * readback truncation while preserving the source image's exact aspect ratio.
+ */
+function buildAlignedSegmentationCanvas(srcCanvas: HTMLCanvasElement): HTMLCanvasElement {
+  const srcW = srcCanvas.width;
+  const srcH = srcCanvas.height;
+  const longest = Math.max(srcW, srcH);
+  const scale = longest > MAX_SEGMENTER_DIMENSION ? MAX_SEGMENTER_DIMENSION / longest : 1;
+
+  const segW = Math.max(64, Math.round((srcW * scale) / 4) * 4);
+  const segH = Math.max(64, Math.round((srcH * scale) / 4) * 4);
+
+  const { canvas, ctx } = createCleanCanvas(segW, segH);
+  ctx.drawImage(srcCanvas, 0, 0, srcW, srcH, 0, 0, segW, segH);
+  return canvas;
+}
+
+/**
+ * Pixel-center bilinear resampling of a float mask from a sub-rectangle
+ * (cropX, cropY, cropW, cropH) inside (srcW x srcH) onto exact destination (dstW x dstH).
+ * Matches Canvas 2D drawImage(src, cropX, cropY, cropW, cropH, 0, 0, dstW, dstH)
+ * to sub-pixel precision so masks align 1:1 with the rendered viewport pixels.
+ */
+function resampleFloatMaskRegion(
+  src: Float32Array,
+  srcW: number,
+  srcH: number,
+  cropX: number,
+  cropY: number,
+  cropW: number,
+  cropH: number,
+  dstW: number,
+  dstH: number
+): Float32Array {
+  const isIdentity =
+    srcW === dstW &&
+    srcH === dstH &&
+    cropX === 0 &&
+    cropY === 0 &&
+    cropW === srcW &&
+    cropH === srcH &&
+    src.length === dstW * dstH;
+
+  if (isIdentity) {
+    return src;
+  }
+
+  const dst = new Float32Array(dstW * dstH);
+  const maxSrcX = Math.max(0, srcW - 1);
+  const maxSrcY = Math.max(0, srcH - 1);
+
+  for (let y = 0; y < dstH; y++) {
+    const v = (y + 0.5) / dstH;
+    const rawSy = cropY + v * cropH - 0.5;
+    const sy = rawSy < 0 ? 0 : rawSy > maxSrcY ? maxSrcY : rawSy;
+    const y0 = Math.floor(sy);
+    const y1 = y0 < maxSrcY ? y0 + 1 : maxSrcY;
+    const fy = sy - y0;
+    const oneMinusFy = 1 - fy;
+    const row0 = y0 * srcW;
+    const row1 = y1 * srcW;
+    const dstRow = y * dstW;
+
+    for (let x = 0; x < dstW; x++) {
+      const u = (x + 0.5) / dstW;
+      const rawSx = cropX + u * cropW - 0.5;
+      const sx = rawSx < 0 ? 0 : rawSx > maxSrcX ? maxSrcX : rawSx;
+      const x0 = Math.floor(sx);
+      const x1 = x0 < maxSrcX ? x0 + 1 : maxSrcX;
+      const fx = sx - x0;
+
+      const top = src[row0 + x0] * (1 - fx) + src[row0 + x1] * fx;
+      const bot = src[row1 + x0] * (1 - fx) + src[row1 + x1] * fx;
+      dst[dstRow + x] = top * oneMinusFy + bot * fy;
+    }
+  }
+
+  return dst;
+}
+
 function resampleFloatMask(
   src: Float32Array,
   srcW: number,
@@ -112,38 +244,7 @@ function resampleFloatMask(
   dstW: number,
   dstH: number
 ): Float32Array {
-  if (srcW === dstW && srcH === dstH && src.length === dstW * dstH) {
-    return src;
-  }
-
-  const dst = new Float32Array(dstW * dstH);
-  const scaleX = srcW > 1 && dstW > 1 ? (srcW - 1) / (dstW - 1) : 0;
-  const scaleY = srcH > 1 && dstH > 1 ? (srcH - 1) / (dstH - 1) : 0;
-
-  for (let y = 0; y < dstH; y++) {
-    const my = y * scaleY;
-    const y0 = Math.floor(my);
-    const y1 = Math.min(srcH - 1, y0 + 1);
-    const fy = my - y0;
-    const row0 = y0 * srcW;
-    const row1 = y1 * srcW;
-    const dstRow = y * dstW;
-
-    for (let x = 0; x < dstW; x++) {
-      const mx = x * scaleX;
-      const x0 = Math.floor(mx);
-      const x1 = Math.min(srcW - 1, x0 + 1);
-      const fx = mx - x0;
-
-      const v00 = src[row0 + x0];
-      const v10 = src[row0 + x1];
-      const v01 = src[row1 + x0];
-      const v11 = src[row1 + x1];
-      dst[dstRow + x] = (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy;
-    }
-  }
-
-  return dst;
+  return resampleFloatMaskRegion(src, srcW, srcH, 0, 0, srcW, srcH, dstW, dstH);
 }
 
 function blurFloatMask(
@@ -153,35 +254,36 @@ function blurFloatMask(
   radius: number
 ): Float32Array {
   if (radius <= 0) return src;
+  const r = Math.min(32, Math.round(radius));
   const tmp = new Float32Array(width * height);
   const dst = new Float32Array(width * height);
-  const windowSize = radius * 2 + 1;
+  const windowSize = r * 2 + 1;
 
   for (let y = 0; y < height; y++) {
     const row = y * width;
     let sum = 0;
-    for (let x = -radius; x <= radius; x++) {
-      const clampedX = Math.max(0, Math.min(width - 1, x));
+    for (let x = -r; x <= r; x++) {
+      const clampedX = x < 0 ? 0 : x >= width ? width - 1 : x;
       sum += src[row + clampedX];
     }
     for (let x = 0; x < width; x++) {
       tmp[row + x] = sum / windowSize;
-      const removeX = Math.max(0, Math.min(width - 1, x - radius));
-      const addX = Math.max(0, Math.min(width - 1, x + radius + 1));
+      const removeX = x - r < 0 ? 0 : x - r;
+      const addX = x + r + 1 >= width ? width - 1 : x + r + 1;
       sum += src[row + addX] - src[row + removeX];
     }
   }
 
   for (let x = 0; x < width; x++) {
     let sum = 0;
-    for (let y = -radius; y <= radius; y++) {
-      const clampedY = Math.max(0, Math.min(height - 1, y));
+    for (let y = -r; y <= r; y++) {
+      const clampedY = y < 0 ? 0 : y >= height ? height - 1 : y;
       sum += tmp[clampedY * width + x];
     }
     for (let y = 0; y < height; y++) {
       dst[y * width + x] = sum / windowSize;
-      const removeY = Math.max(0, Math.min(height - 1, y - radius));
-      const addY = Math.max(0, Math.min(height - 1, y + radius + 1));
+      const removeY = y - r < 0 ? 0 : y - r;
+      const addY = y + r + 1 >= height ? height - 1 : y + r + 1;
       sum += tmp[addY * width + x] - tmp[removeY * width + x];
     }
   }
@@ -205,16 +307,15 @@ function blurRgbaBuffer(
   const windowSize = r * 2 + 1;
   const tmp = new Uint8ClampedArray(rgba.length);
 
-  // Two-pass box blur approximates smooth Gaussian optical bokeh
+  // Two-pass separable box blur approximates smooth Gaussian optical bokeh
   for (let pass = 0; pass < 2; pass++) {
-    // Horizontal pass: rgba -> tmp
     for (let y = 0; y < height; y++) {
       const rowOffset = y * width;
       let sr = 0;
       let sg = 0;
       let sb = 0;
       for (let x = -r; x <= r; x++) {
-        const cx = Math.max(0, Math.min(width - 1, x));
+        const cx = x < 0 ? 0 : x >= width ? width - 1 : x;
         const p = (rowOffset + cx) * 4;
         sr += rgba[p];
         sg += rgba[p + 1];
@@ -227,8 +328,8 @@ function blurRgbaBuffer(
         tmp[dstIdx + 2] = Math.round(sb / windowSize);
         tmp[dstIdx + 3] = 255;
 
-        const remX = Math.max(0, Math.min(width - 1, x - r));
-        const addX = Math.max(0, Math.min(width - 1, x + r + 1));
+        const remX = x - r < 0 ? 0 : x - r;
+        const addX = x + r + 1 >= width ? width - 1 : x + r + 1;
         const remP = (rowOffset + remX) * 4;
         const addP = (rowOffset + addX) * 4;
         sr += rgba[addP] - rgba[remP];
@@ -237,13 +338,12 @@ function blurRgbaBuffer(
       }
     }
 
-    // Vertical pass: tmp -> rgba
     for (let x = 0; x < width; x++) {
       let sr = 0;
       let sg = 0;
       let sb = 0;
       for (let y = -r; y <= r; y++) {
-        const cy = Math.max(0, Math.min(height - 1, y));
+        const cy = y < 0 ? 0 : y >= height ? height - 1 : y;
         const p = (cy * width + x) * 4;
         sr += tmp[p];
         sg += tmp[p + 1];
@@ -256,8 +356,8 @@ function blurRgbaBuffer(
         rgba[dstIdx + 2] = Math.round(sb / windowSize);
         rgba[dstIdx + 3] = 255;
 
-        const remY = Math.max(0, Math.min(height - 1, y - r));
-        const addY = Math.max(0, Math.min(height - 1, y + r + 1));
+        const remY = y - r < 0 ? 0 : y - r;
+        const addY = y + r + 1 >= height ? height - 1 : y + r + 1;
         const remP = (remY * width + x) * 4;
         const addP = (addY * width + x) * 4;
         sr += tmp[addP] - tmp[remP];
@@ -269,7 +369,7 @@ function blurRgbaBuffer(
 }
 
 /**
- * YCbCr skin likelihood estimate (0..1) so wardrobe tone styling protects neck, chin, and arms.
+ * YCbCr skin likelihood estimate (0..1) so wardrobe tone styling protects face, neck, and arms.
  */
 function estimateSkinLikelihood(r: number, g: number, b: number): number {
   const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
@@ -278,6 +378,103 @@ function estimateSkinLikelihood(r: number, g: number, b: number): number {
   const crDist = Math.abs(cr - 153) / 24;
   const d = Math.hypot(cbDist, crDist);
   return Math.max(0, Math.min(1, 1 - (d - 0.75) / 0.55));
+}
+
+function sampleRegionAverage(
+  mask: Float32Array,
+  width: number,
+  height: number,
+  x0Frac: number,
+  y0Frac: number,
+  x1Frac: number,
+  y1Frac: number
+): number {
+  const xStart = Math.max(0, Math.floor(x0Frac * width));
+  const xEnd = Math.min(width, Math.max(xStart + 1, Math.ceil(x1Frac * width)));
+  const yStart = Math.max(0, Math.floor(y0Frac * height));
+  const yEnd = Math.min(height, Math.max(yStart + 1, Math.ceil(y1Frac * height)));
+
+  let sum = 0;
+  let count = 0;
+  for (let y = yStart; y < yEnd; y++) {
+    const row = y * width;
+    for (let x = xStart; x < xEnd; x++) {
+      sum += mask[row + x];
+      count += 1;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+/**
+ * Verify that a segmented foreground mask spans the full image cleanly without
+ * empty output, full-frame saturation, or a hardware/WASM 50/50 half-frame readback glitch.
+ */
+function isForegroundMaskValid(mask: Float32Array, width: number, height: number): boolean {
+  const total = width * height;
+  if (total <= 0 || mask.length < total) return false;
+
+  let fgCount = 0;
+  let leftSum = 0;
+  let rightSum = 0;
+  let topSum = 0;
+  let bottomSum = 0;
+  let leftMax = 0;
+  let rightMax = 0;
+  let topMax = 0;
+  let bottomMax = 0;
+
+  const halfX = Math.floor(width / 2);
+  const halfY = Math.floor(height / 2);
+
+  for (let y = 0; y < height; y++) {
+    const row = y * width;
+    const isTop = y < halfY;
+    for (let x = 0; x < width; x++) {
+      const v = mask[row + x];
+      if (!Number.isFinite(v)) return false;
+      if (v > 0.35) fgCount += 1;
+
+      if (x < halfX) {
+        leftSum += v;
+        if (v > leftMax) leftMax = v;
+      } else {
+        rightSum += v;
+        if (v > rightMax) rightMax = v;
+      }
+
+      if (isTop) {
+        topSum += v;
+        if (v > topMax) topMax = v;
+      } else {
+        bottomSum += v;
+        if (v > bottomMax) bottomMax = v;
+      }
+    }
+  }
+
+  const fgRatio = fgCount / total;
+  if (fgRatio < 0.03 || fgRatio > 0.985) {
+    return false;
+  }
+
+  // Detect corrupted GPU/WASM half-buffer readbacks where exactly one half is dead zero
+  const halfPixels = Math.max(1, total / 2);
+  const leftMean = leftSum / halfPixels;
+  const rightMean = rightSum / halfPixels;
+  const topMean = topSum / halfPixels;
+  const bottomMean = bottomSum / halfPixels;
+
+  const leftDead = leftMax < 0.015 && rightMean > 0.2;
+  const rightDead = rightMax < 0.015 && leftMean > 0.2;
+  const topDead = topMax < 0.015 && bottomMean > 0.2;
+  const bottomDead = bottomMax < 0.015 && topMean > 0.2;
+
+  if (leftDead || rightDead || topDead || bottomDead) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildFallbackPortraitMask(
@@ -322,39 +519,6 @@ function buildFallbackPortraitMask(
   return { width, height, isMulticlass: false, foreground, hair, skin, clothes };
 }
 
-/**
- * Create a clean 2D canvas with explicit dimensions and reset compositing state
- * (globalCompositeOperation = 'source-over', globalAlpha = 1).
- */
-function createCleanCanvas(
-  width: number,
-  height: number
-): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  if (!ctx) {
-    throw new Error('Canvas 2D context unavailable.');
-  }
-  ctx.globalCompositeOperation = 'source-over';
-  ctx.globalAlpha = 1;
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
-  return { canvas, ctx };
-}
-
-/**
- * Rasterize the uploaded source image at its exact natural pixel dimensions (srcW x srcH).
- */
-function rasterizeSourceCanvas(img: HTMLImageElement): HTMLCanvasElement {
-  const srcW = Math.max(1, img.naturalWidth || img.width);
-  const srcH = Math.max(1, img.naturalHeight || img.height);
-  const { canvas, ctx } = createCleanCanvas(srcW, srcH);
-  ctx.drawImage(img, 0, 0, srcW, srcH);
-  return canvas;
-}
-
 export async function segmentSelfie(
   sourceDataUrl: string,
   anchor: FramingAnchor
@@ -369,9 +533,13 @@ export async function segmentSelfie(
     return buildFallbackPortraitMask(srcW, srcH, anchor);
   }
 
+  // Feed a clean 4-pixel-aligned canvas (<=512px) into MediaPipe so WebGL/WASM
+  // buffer stride and texture readbacks stay 100% aligned across all browsers.
+  const segInputCanvas = buildAlignedSegmentationCanvas(srcCanvas);
+
   let result: ReturnType<ImageSegmenter['segment']> | null = null;
   try {
-    result = segmenter.segment(srcCanvas);
+    result = segmenter.segment(segInputCanvas);
     const masks = result.confidenceMasks ?? [];
     if (masks.length === 0) {
       return buildFallbackPortraitMask(srcW, srcH, anchor);
@@ -384,11 +552,16 @@ export async function segmentSelfie(
       return buildFallbackPortraitMask(srcW, srcH, anchor);
     }
 
-    // Clone every WASM Float32Array into independent JS memory before reading the next mask
-    const clonedMasks = masks.map((m) => new Float32Array(m.getAsFloat32Array()));
-    if (clonedMasks.some((buf) => buf.length < expectedLen)) {
-      return buildFallbackPortraitMask(srcW, srcH, anchor);
-    }
+    // Clone every WASM/WebGL Float32Array into independent JS memory and clamp cleanly to [0, 1]
+    const clonedMasks = masks.map((m) => {
+      const view = m.getAsFloat32Array();
+      const copy = new Float32Array(expectedLen);
+      const len = Math.min(expectedLen, view.length);
+      for (let i = 0; i < len; i++) {
+        copy[i] = clampUnit(view[i]);
+      }
+      return copy;
+    });
 
     const rawFg = new Float32Array(expectedLen);
     const rawHair = new Float32Array(expectedLen);
@@ -408,75 +581,92 @@ export async function segmentSelfie(
 
       for (let i = 0; i < expectedLen; i++) {
         const fgVal = 1 - bg[i];
-        rawFg[i] = Math.max(0, Math.min(1, (fgVal - 0.12) / 0.76));
+        rawFg[i] = clampUnit((fgVal - 0.12) / 0.76);
         rawHair[i] = hairArr[i];
         const totalSkin = Math.min(1, bodySkinArr[i] + faceSkinArr[i]);
         rawSkin[i] = totalSkin;
-        const pureClothes = clothesArr[i] * Math.max(0, 1 - totalSkin * 2.2);
-        rawClothes[i] = pureClothes > 0.35 ? Math.min(1, (pureClothes - 0.35) / 0.45) : 0;
+        const pureClothes = clothesArr[i] * Math.max(0, 1 - totalSkin * 2.4 - hairArr[i] * 1.4);
+        rawClothes[i] = pureClothes > 0.38 ? Math.min(1, (pureClothes - 0.38) / 0.45) : 0;
       }
     } else {
-      // Binary selfie_segmenter.tflite: smooth neural foreground matte
-      const channel = clonedMasks[clonedMasks.length - 1];
-
+      // Binary selfie_segmenter.tflite (1 or 2 channels): pick true foreground via region check
+      let bestChannel = clonedMasks[clonedMasks.length - 1];
       let invertMask = false;
-      if (clonedMasks.length === 1 && maskW > 8 && maskH > 8) {
+
+      const fx0 = Math.max(0.15, anchor.faceCenterX - 0.12);
+      const fx1 = Math.min(0.85, anchor.faceCenterX + 0.12);
+      const fy0 = Math.max(0.12, anchor.faceCenterY - 0.1);
+      const fy1 = Math.min(0.85, anchor.faceCenterY + 0.15);
+
+      if (clonedMasks.length === 2) {
+        const scoreChannel = (ch: Float32Array): number => {
+          const centerScore = sampleRegionAverage(ch, maskW, maskH, fx0, fy0, fx1, fy1);
+          const cornerScore =
+            (sampleRegionAverage(ch, maskW, maskH, 0, 0, 0.14, 0.14) +
+              sampleRegionAverage(ch, maskW, maskH, 0.86, 0, 1, 0.14)) *
+            0.5;
+          return centerScore - cornerScore;
+        };
+        bestChannel = scoreChannel(clonedMasks[1]) >= scoreChannel(clonedMasks[0])
+          ? clonedMasks[1]
+          : clonedMasks[0];
+      } else {
+        const centerAvg = sampleRegionAverage(bestChannel, maskW, maskH, fx0, fy0, fx1, fy1);
         const cornerAvg =
-          (channel[0] +
-            channel[maskW - 1] +
-            channel[Math.floor(maskH * 0.1) * maskW] +
-            channel[Math.floor(maskH * 0.1) * maskW + (maskW - 1)]) /
-          4;
-        const centerAvg = channel[Math.floor(maskH * 0.5) * maskW + Math.floor(maskW * 0.5)];
-        if (cornerAvg > centerAvg + 0.25) {
+          (sampleRegionAverage(bestChannel, maskW, maskH, 0, 0, 0.14, 0.14) +
+            sampleRegionAverage(bestChannel, maskW, maskH, 0.86, 0, 1, 0.14)) *
+          0.5;
+        if (cornerAvg > centerAvg + 0.2) {
           invertMask = true;
         }
       }
 
       const { ctx: sampleCtx } = createCleanCanvas(maskW, maskH);
-      sampleCtx.drawImage(srcCanvas, 0, 0, maskW, maskH);
+      sampleCtx.drawImage(srcCanvas, 0, 0, srcW, srcH, 0, 0, maskW, maskH);
       const samplePx = sampleCtx.getImageData(0, 0, maskW, maskH).data;
 
-      const neckStartY = Math.min(0.85, anchor.faceCenterY + anchor.faceHeightRatio * 0.72);
+      const neckStartY = Math.min(0.86, anchor.faceCenterY + anchor.faceHeightRatio * 0.78);
       const crownY = Math.max(0.05, anchor.faceCenterY - anchor.faceHeightRatio * 0.2);
 
       for (let y = 0; y < maskH; y++) {
         const ny = y / Math.max(1, maskH - 1);
         for (let x = 0; x < maskW; x++) {
           const i = y * maskW + x;
-          const rawVal = invertMask ? 1 - channel[i] : channel[i];
-          const fg = Math.max(0, Math.min(1, (rawVal - 0.14) / 0.72));
+          const rawVal = invertMask ? 1 - bestChannel[i] : bestChannel[i];
+          const fg = clampUnit((rawVal - 0.14) / 0.72);
           rawFg[i] = fg;
 
           if (fg > 0.05) {
-            const skinProb = estimateSkinLikelihood(
-              samplePx[i * 4],
-              samplePx[i * 4 + 1],
-              samplePx[i * 4 + 2]
-            );
+            const r = samplePx[i * 4];
+            const g = samplePx[i * 4 + 1];
+            const b = samplePx[i * 4 + 2];
+            const skinProb = estimateSkinLikelihood(r, g, b);
             rawSkin[i] = fg * skinProb;
 
             if (ny < crownY && skinProb < 0.45) {
               rawHair[i] = fg * 0.85;
             }
 
-            if (ny > neckStartY && skinProb < 0.28) {
-              const verticalFade = Math.min(1, (ny - neckStartY) / 0.14);
-              rawClothes[i] = fg * verticalFade * (1 - skinProb * 2.5);
+            if (fg > 0.45 && ny > neckStartY && skinProb < 0.22) {
+              const verticalFade = Math.min(1, (ny - neckStartY) / 0.22);
+              rawClothes[i] = fg * verticalFade * Math.max(0, 1 - skinProb * 3.0);
             }
           }
         }
       }
     }
 
-    // Feather at mask resolution, then resample strictly to exact source dimensions (srcW x srcH)
-    // so every compositing step indexes masks 1:1 with the source canvas pixels.
-    const featherFg = blurFloatMask(rawFg, maskW, maskH, Math.max(1, Math.round(maskW / 320)));
+    if (!isForegroundMaskValid(rawFg, maskW, maskH)) {
+      return buildFallbackPortraitMask(srcW, srcH, anchor);
+    }
+
+    // Smooth edge feathering at mask resolution before pixel-center resampling to exact (srcW x srcH)
+    const featherFg = blurFloatMask(rawFg, maskW, maskH, Math.max(1, Math.round(maskW / 280)));
     const featherClothes = blurFloatMask(
       rawClothes,
       maskW,
       maskH,
-      Math.max(2, Math.round(maskW / 140))
+      Math.max(3, Math.round(maskW / 100))
     );
 
     return {
@@ -513,6 +703,45 @@ function getFramingTarget(framingId: FramingId): { targetFaceHeight: number; tar
   }
 }
 
+function computeViewportCropRect(
+  srcW: number,
+  srcH: number,
+  outW: number,
+  outH: number,
+  anchor: FramingAnchor,
+  recipe: DarkroomRecipe
+): ViewportCropRect {
+  const outAspect = outW / outH;
+  const framingTarget = getFramingTarget(recipe.framingId);
+
+  const maxCropH = srcW / outAspect <= srcH ? srcW / outAspect : srcH;
+  const desiredCropH =
+    (anchor.faceHeightRatio * srcH) /
+    Math.max(0.12, framingTarget.targetFaceHeight * recipe.zoomAdjust);
+
+  const boundedH = Math.max(maxCropH * 0.48, Math.min(maxCropH, desiredCropH));
+  const cropW = Math.min(srcW, boundedH * outAspect);
+  const cropH = Math.min(srcH, cropW / outAspect);
+
+  const faceX = anchor.faceCenterX * srcW;
+  const faceY = anchor.faceCenterY * srcH;
+  const desiredEyeFrac = framingTarget.targetEyeY + recipe.verticalOffset;
+
+  const rawCropX = faceX - cropW * 0.5;
+  const rawCropY = faceY - cropH * desiredEyeFrac;
+
+  return {
+    cropX: Math.max(0, Math.min(srcW - cropW, rawCropX)),
+    cropY: Math.max(0, Math.min(srcH - cropH, rawCropY)),
+    cropW,
+    cropH,
+  };
+}
+
+/**
+ * Natural, luminance-balanced wardrobe toning that harmonizes garment hue/value
+ * without creating harsh dark/bright tonal cliffs across the portrait.
+ */
 function applyAttireStyling(
   r: number,
   g: number,
@@ -531,36 +760,36 @@ function applyAttireStyling(
 
   switch (attireId) {
     case 'charcoal-blazer': {
-      const mapped = 48 + Math.pow(lum, 1.04) * 98;
+      const mapped = 56 + Math.pow(lum, 0.96) * 112;
       tr = mapped * 0.97;
       tg = mapped * 0.99;
       tb = mapped * 1.03;
       break;
     }
     case 'crisp-oxford': {
-      const mapped = 162 + Math.pow(lum, 0.72) * 84;
+      const mapped = 158 + Math.pow(lum, 0.76) * 86;
       tr = mapped * 1.01;
       tg = mapped * 1.0;
-      tb = mapped * 0.97;
+      tb = mapped * 0.98;
       break;
     }
     case 'black-turtleneck': {
-      const mapped = 30 + Math.pow(lum, 1.16) * 68;
+      const mapped = 36 + Math.pow(lum, 1.08) * 82;
       tr = mapped;
       tg = mapped;
       tb = mapped * 1.02;
       break;
     }
     case 'smart-knit': {
-      const mapped = 38 + Math.pow(lum, 1.04) * 102;
-      tr = mapped * 0.68;
-      tg = mapped * 0.8;
-      tb = mapped * 1.15;
+      const mapped = 46 + Math.pow(lum, 0.98) * 108;
+      tr = mapped * 0.74;
+      tg = mapped * 0.84;
+      tb = mapped * 1.12;
       break;
     }
   }
 
-  const blend = Math.min(0.7, strength * 0.7);
+  const blend = Math.min(0.56, strength * 0.56);
   return [
     r * (1 - blend) + tr * blend,
     g * (1 - blend) + tg * blend,
@@ -568,40 +797,46 @@ function applyAttireStyling(
   ];
 }
 
+/**
+ * Smooth, radially symmetric key illumination centered on the framed subject's actual
+ * face coordinates in the final viewport. Guarantees uniform, natural studio falloff
+ * with zero left/right or top/bottom 50/50 brightness split.
+ */
 function computeKeyLightMultiplier(
   nx: number,
   ny: number,
+  faceNx: number,
+  faceNy: number,
   lightingId: LightingId,
   strength: number
 ): number {
-  const s = strength * 0.11;
-  let delta = 0;
+  const s = strength * 0.09;
+  const dx = (nx - faceNx) * 0.75;
+  const dy = (ny - faceNy) * 0.75;
+  const dist = Math.hypot(dx, dy);
 
+  let delta = 0;
   switch (lightingId) {
     case 'rembrandt': {
-      const dist = Math.hypot((nx - 0.45) * 0.85, (ny - 0.35) * 0.85);
-      delta = s * (0.22 - dist * 0.28 + (0.5 - nx) * 0.06);
-      break;
-    }
-    case 'golden-rim': {
-      const dist = Math.hypot((nx - 0.52) * 0.85, (ny - 0.35) * 0.85);
       delta = s * (0.22 - dist * 0.26);
       break;
     }
+    case 'golden-rim': {
+      delta = s * (0.2 - dist * 0.22);
+      break;
+    }
     case 'diffused-window': {
-      const dist = Math.hypot((nx - 0.48) * 0.8, (ny - 0.36) * 0.8);
-      delta = s * (0.2 - dist * 0.22 + (0.5 - nx) * 0.05);
+      delta = s * (0.18 - dist * 0.18);
       break;
     }
     case 'softbox-key':
     default: {
-      const dist = Math.hypot((nx - 0.5) * 0.85, (ny - 0.36) * 0.85);
-      delta = s * (0.24 - dist * 0.26);
+      delta = s * (0.24 - dist * 0.22);
       break;
     }
   }
 
-  return Math.max(0.97, Math.min(1.06, 1 + delta));
+  return Math.max(0.96, Math.min(1.06, 1 + delta));
 }
 
 export async function renderStudioHeadshot(
@@ -617,49 +852,114 @@ export async function renderStudioHeadshot(
   ]);
 
   // -------------------------------------------------------------------------
-  // STAGE 1: Match ALL working canvases & masks strictly to source dimensions (srcW x srcH)
-  // so every pixel and mask channel aligns 1:1 with zero clipping or coordinate shift.
+  // STAGE 1: Rasterize source & compute exact framing crop into final viewport (outW x outH)
+  // Every image buffer and mask channel is aligned to the EXACT same (outW x outH) grid
+  // before a single compositing pixel is computed.
   // -------------------------------------------------------------------------
   const srcCanvas = rasterizeSourceCanvas(sourceImg);
   const srcW = srcCanvas.width;
   const srcH = srcCanvas.height;
-  const srcCtx = srcCanvas.getContext('2d', { willReadFrequently: true });
-  if (!srcCtx) throw new Error('Source canvas context unavailable.');
-  const srcPx = srcCtx.getImageData(0, 0, srcW, srcH).data;
 
-  // Guarantee masks match exact srcW x srcH dimensions
-  const fgMask = resampleFloatMask(masks.foreground, masks.width, masks.height, srcW, srcH);
-  const hairMask = resampleFloatMask(masks.hair, masks.width, masks.height, srcW, srcH);
-  const skinMask = resampleFloatMask(masks.skin, masks.width, masks.height, srcW, srcH);
-  const clothesMask = resampleFloatMask(masks.clothes, masks.width, masks.height, srcW, srcH);
+  const { width: outW, height: outH } = getOutputDimensions(recipe.aspectRatio);
+  const { cropX, cropY, cropW, cropH } = computeViewportCropRect(
+    srcW,
+    srcH,
+    outW,
+    outH,
+    anchor,
+    recipe
+  );
 
-  // 1A. Draw Studio Backdrop onto bgWorkCanvas at exact (srcW x srcH)
-  const { canvas: bgWorkCanvas, ctx: bgCtx } = createCleanCanvas(srcW, srcH);
+  // 1A. Rasterize the cropped source portrait directly onto the (outW x outH) viewport grid.
+  // This exact canvas also produces alignedSourceUrl for pixel-accurate Before/After comparison.
+  const { canvas: alignedSrcCanvas, ctx: alignedSrcCtx } = createCleanCanvas(outW, outH);
+  alignedSrcCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+  const srcPx = alignedSrcCtx.getImageData(0, 0, outW, outH).data;
+
+  // 1B. Map the source crop rectangle into mask coordinates and resample every mask channel
+  // onto the exact same (outW x outH) viewport dimensions using pixel-center interpolation.
+  const maskScaleX = masks.width / srcW;
+  const maskScaleY = masks.height / srcH;
+  const maskCropX = cropX * maskScaleX;
+  const maskCropY = cropY * maskScaleY;
+  const maskCropW = cropW * maskScaleX;
+  const maskCropH = cropH * maskScaleY;
+
+  const fgMask = resampleFloatMaskRegion(
+    masks.foreground,
+    masks.width,
+    masks.height,
+    maskCropX,
+    maskCropY,
+    maskCropW,
+    maskCropH,
+    outW,
+    outH
+  );
+  const hairMask = resampleFloatMaskRegion(
+    masks.hair,
+    masks.width,
+    masks.height,
+    maskCropX,
+    maskCropY,
+    maskCropW,
+    maskCropH,
+    outW,
+    outH
+  );
+  const skinMask = resampleFloatMaskRegion(
+    masks.skin,
+    masks.width,
+    masks.height,
+    maskCropX,
+    maskCropY,
+    maskCropW,
+    maskCropH,
+    outW,
+    outH
+  );
+  const clothesMask = resampleFloatMaskRegion(
+    masks.clothes,
+    masks.width,
+    masks.height,
+    maskCropX,
+    maskCropY,
+    maskCropW,
+    maskCropH,
+    outW,
+    outH
+  );
+
+  // -------------------------------------------------------------------------
+  // STAGE 2: Render Studio Backdrop symmetrically across the full (outW x outH) viewport
+  // -------------------------------------------------------------------------
+  const { ctx: bgCtx } = createCleanCanvas(outW, outH);
   const [ambR, ambG, ambB] = style.ambientRgb;
   bgCtx.fillStyle = `rgb(${ambR}, ${ambG}, ${ambB})`;
-  bgCtx.fillRect(0, 0, srcW, srcH);
+  bgCtx.fillRect(0, 0, outW, outH);
 
+  const bgNaturalW = Math.max(1, backdropImg.naturalWidth || backdropImg.width);
+  const bgNaturalH = Math.max(1, backdropImg.naturalHeight || backdropImg.height);
   const bgScale =
-    Math.max(srcW / backdropImg.naturalWidth, srcH / backdropImg.naturalHeight) *
-    style.backdropCropZoom;
-  const drawBgW = backdropImg.naturalWidth * bgScale;
-  const drawBgH = backdropImg.naturalHeight * bgScale;
-  const drawBgX = (srcW - drawBgW) / 2;
-  const drawBgY = (srcH - drawBgH) / 2;
+    Math.max(outW / bgNaturalW, outH / bgNaturalH) * style.backdropCropZoom;
+  const drawBgW = bgNaturalW * bgScale;
+  const drawBgH = bgNaturalH * bgScale;
+  const drawBgX = (outW - drawBgW) / 2;
+  const drawBgY = (outH - drawBgH) / 2;
   bgCtx.drawImage(backdropImg, drawBgX, drawBgY, drawBgW, drawBgH);
 
-  const bgImageData = bgCtx.getImageData(0, 0, srcW, srcH);
+  const bgImageData = bgCtx.getImageData(0, 0, outW, outH);
   const bgPx = bgImageData.data;
 
-  // Deterministic CPU bokeh blur (no ctx.filter GPU tile bugs)
-  const scaledBlurRadius = Math.round((recipe.backdropBlur * Math.max(srcW, srcH)) / 1280);
+  // Deterministic CPU bokeh blur across full (outW x outH) viewport (zero GPU tile artifacts)
+  const scaledBlurRadius = Math.round((recipe.backdropBlur * Math.max(outW, outH)) / 1280);
   if (scaledBlurRadius > 0) {
-    blurRgbaBuffer(bgPx, srcW, srcH, scaledBlurRadius);
+    blurRgbaBuffer(bgPx, outW, outH, scaledBlurRadius);
   }
 
-  // Uniform tonal grading across entire (srcW x srcH) backdrop plate
+  // Uniform tonal grading across entire (outW x outH) backdrop plate
   const bgExposureMul = Math.pow(2, recipe.exposure * 0.42);
-  const bgContrastFactor = 1 + recipe.contrast * 0.3;
+  const bgContrastFactor = 1 + recipe.contrast * 0.28;
   const bgSatFactor = recipe.monochrome ? 0 : Math.max(0, 1 + recipe.saturation * 0.5);
   const bgWarmShift = recipe.monochrome ? 0 : recipe.warmth * 18;
 
@@ -689,12 +989,14 @@ export async function renderStudioHeadshot(
     bgPx[i + 2] = clampByte(b);
     bgPx[i + 3] = 255;
   }
-  bgCtx.putImageData(bgImageData, 0, 0);
 
-  // 1B. Process Segmented Foreground Subject Layer at exact (srcW x srcH)
-  const { canvas: subjectCanvas, ctx: subjectCtx } = createCleanCanvas(srcW, srcH);
-  const subjectImageData = subjectCtx.createImageData(srcW, srcH);
-  const subPx = subjectImageData.data;
+  // -------------------------------------------------------------------------
+  // STAGE 3: Single Unified Full-Viewport Relighting, Floating-Point Alpha Compositing,
+  // Vignette, and Analog Grain Pass directly into outCanvas (outW x outH)
+  // -------------------------------------------------------------------------
+  const { canvas: outCanvas, ctx: outCtx } = createCleanCanvas(outW, outH);
+  const outImageData = outCtx.createImageData(outW, outH);
+  const outPx = outImageData.data;
 
   const [rimR, rimG, rimB] =
     recipe.lightingId === 'golden-rim'
@@ -703,196 +1005,149 @@ export async function renderStudioHeadshot(
         ? [240, 240, 240]
         : style.rimRgb;
 
-  const exposureMul = Math.pow(2, recipe.exposure * 0.9);
-  const contrastFactor = 1 + recipe.contrast * 0.68;
+  const exposureMul = Math.pow(2, recipe.exposure * 0.85);
+  const contrastFactor = 1 + recipe.contrast * 0.64;
   const satFactor = recipe.monochrome ? 0 : Math.max(0, 1 + recipe.saturation);
 
-  for (let y = 0; y < srcH; y++) {
-    const ny = y / Math.max(1, srcH - 1);
-    const row = y * srcW;
+  // Subject face center in final viewport coordinates [0..1]
+  const framedFaceNx = clampUnit((anchor.faceCenterX * srcW - cropX) / Math.max(1, cropW));
+  const framedFaceNy = clampUnit((anchor.faceCenterY * srcH - cropY) / Math.max(1, cropH));
 
-    for (let x = 0; x < srcW; x++) {
+  const applyVignette = recipe.vignette > 0.01;
+  const grainAmp = recipe.grain > 0.01 ? recipe.grain * 16 : 0;
+  let seed = 133791;
+  const nextNoise = (): number => {
+    seed = (seed * 1664525 + 1013904223) | 0;
+    return ((seed >>> 24) / 255 - 0.5) * 2;
+  };
+
+  for (let y = 0; y < outH; y++) {
+    const ny = y / Math.max(1, outH - 1);
+    const vy = (y / outH - 0.45) * 1.3;
+    const vySq = vy * vy;
+    const row = y * outW;
+
+    for (let x = 0; x < outW; x++) {
       const mIdx = row + x;
       const pIdx = mIdx * 4;
       const alpha = fgMask[mIdx];
 
-      if (alpha <= 0.004) {
-        subPx[pIdx] = 0;
-        subPx[pIdx + 1] = 0;
-        subPx[pIdx + 2] = 0;
-        subPx[pIdx + 3] = 0;
-        continue;
-      }
+      const br = bgPx[pIdx];
+      const bg = bgPx[pIdx + 1];
+      const bb = bgPx[pIdx + 2];
 
-      const nx = x / Math.max(1, srcW - 1);
-      let fr = srcPx[pIdx];
-      let fg = srcPx[pIdx + 1];
-      let fb = srcPx[pIdx + 2];
+      let outR = br;
+      let outG = bg;
+      let outB = bb;
 
-      const clothesWeight = clothesMask[mIdx];
-      const hairWeight = hairMask[mIdx];
-      const skinWeight = skinMask[mIdx];
+      if (alpha > 0.002) {
+        const nx = x / Math.max(1, outW - 1);
+        let fr = srcPx[pIdx];
+        let fg = srcPx[pIdx + 1];
+        let fb = srcPx[pIdx + 2];
 
-      if (clothesWeight > 0.08 && recipe.attireId !== 'keep-original') {
-        [fr, fg, fb] = applyAttireStyling(fr, fg, fb, recipe.attireId, clothesWeight);
-      }
+        const clothesWeight = clothesMask[mIdx];
+        const hairWeight = hairMask[mIdx];
+        const skinWeight = skinMask[mIdx];
 
-      const keyMul = computeKeyLightMultiplier(
-        nx,
-        ny,
-        recipe.lightingId,
-        recipe.keyLightStrength
-      );
-      const totalLight = exposureMul * keyMul;
-      fr *= totalLight;
-      fg *= totalLight;
-      fb *= totalLight;
-
-      if (recipe.warmth !== 0) {
-        const wShift = recipe.warmth * 22;
-        fr += wShift;
-        fg += wShift * 0.25;
-        fb -= wShift * 0.85;
-      }
-
-      const localContrast = skinWeight > 0.3 ? 1 + (contrastFactor - 1) * 0.65 : contrastFactor;
-      fr = (fr - 128) * localContrast + 128;
-      fg = (fg - 128) * localContrast + 128;
-      fb = (fb - 128) * localContrast + 128;
-
-      const lum = (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255;
-      const shadowBlend = Math.max(0, 1 - lum * 1.5) * 0.08;
-      fr = fr * (1 - shadowBlend) + ambR * shadowBlend;
-      fg = fg * (1 - shadowBlend) + ambG * shadowBlend;
-      fb = fb * (1 - shadowBlend) + ambB * shadowBlend;
-
-      // Edge spill suppression + subtle hair/shoulder studio rim light
-      if (alpha < 0.92) {
-        const edgeFactor = Math.sin(alpha * Math.PI);
-        const decon = (1 - alpha) * 0.3;
-        fr = fr * (1 - decon) + bgPx[pIdx] * decon;
-        fg = fg * (1 - decon) + bgPx[pIdx + 1] * decon;
-        fb = fb * (1 - decon) + bgPx[pIdx + 2] * decon;
-
-        const upperBias = Math.max(0.25, 1.08 - ny * 0.8);
-        const rimPower =
-          edgeFactor * recipe.rimLight * 0.62 * upperBias * (0.45 + hairWeight * 0.55);
-
-        fr += (rimR - fr) * rimPower * 0.46;
-        fg += (rimG - fg) * rimPower * 0.46;
-        fb += (rimB - fb) * rimPower * 0.46;
-      }
-
-      if (recipe.monochrome) {
-        const mono = 0.36 * fr + 0.52 * fg + 0.12 * fb;
-        fr = mono * 1.015;
-        fg = mono * 1.005;
-        fb = mono * 0.985;
-      } else if (satFactor !== 1) {
-        const gray = 0.299 * fr + 0.587 * fg + 0.114 * fb;
-        fr = gray + (fr - gray) * satFactor;
-        fg = gray + (fg - gray) * satFactor;
-        fb = gray + (fb - gray) * satFactor;
-      }
-
-      subPx[pIdx] = clampByte(fr);
-      subPx[pIdx + 1] = clampByte(fg);
-      subPx[pIdx + 2] = clampByte(fb);
-      subPx[pIdx + 3] = clampByte(alpha * 255);
-    }
-  }
-  subjectCtx.putImageData(subjectImageData, 0, 0);
-
-  // 1C. Composite Backdrop + Subject cleanly with explicit source-over at exact (srcW x srcH)
-  const { canvas: compositeCanvas, ctx: compCtx } = createCleanCanvas(srcW, srcH);
-  compCtx.globalCompositeOperation = 'source-over';
-  compCtx.globalAlpha = 1;
-  compCtx.drawImage(bgWorkCanvas, 0, 0, srcW, srcH);
-  compCtx.drawImage(subjectCanvas, 0, 0, srcW, srcH);
-
-  // -------------------------------------------------------------------------
-  // STAGE 2: Apply Optical Framing Crop onto Final Output (outW x outH)
-  // Using the exact same source crop rectangle for both studio & aligned original
-  // -------------------------------------------------------------------------
-  const { width: outW, height: outH } = getOutputDimensions(recipe.aspectRatio);
-  const outAspect = outW / outH;
-  const framingTarget = getFramingTarget(recipe.framingId);
-
-  // Compute maximum crop rectangle inside [0..srcW] x [0..srcH] matching outAspect
-  const maxCropH = srcW / outAspect <= srcH ? srcW / outAspect : srcH;
-  const maxCropW = maxCropH * outAspect;
-
-  // Target crop height so the subject's face spans framingTarget.targetFaceHeight
-  const desiredCropH =
-    (anchor.faceHeightRatio * srcH) /
-    Math.max(0.12, framingTarget.targetFaceHeight * recipe.zoomAdjust);
-  const cropH = Math.max(maxCropH * 0.48, Math.min(maxCropH, desiredCropH));
-  const cropW = cropH * outAspect;
-
-  const faceX = anchor.faceCenterX * srcW;
-  const faceY = anchor.faceCenterY * srcH;
-  const desiredEyeFrac = framingTarget.targetEyeY + recipe.verticalOffset;
-
-  const rawCropX = faceX - cropW * 0.5;
-  const rawCropY = faceY - cropH * desiredEyeFrac;
-  const cropX = Math.max(0, Math.min(srcW - cropW, rawCropX));
-  const cropY = Math.max(0, Math.min(srcH - cropH, rawCropY));
-
-  const { canvas: outCanvas, ctx: outCtx } = createCleanCanvas(outW, outH);
-  outCtx.drawImage(compositeCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
-
-  // Unified optical vignette & subtle analog grain on final framed output (outW x outH)
-  if (recipe.vignette > 0.01 || recipe.grain > 0.01) {
-    const finalData = outCtx.getImageData(0, 0, outW, outH);
-    const px = finalData.data;
-    const grainAmp = recipe.grain * 18;
-    let seed = 133791;
-    const nextNoise = (): number => {
-      seed = (seed * 1664525 + 1013904223) | 0;
-      return ((seed >>> 24) / 255 - 0.5) * 2;
-    };
-
-    for (let y = 0; y < outH; y++) {
-      const vy = (y / outH - 0.45) * 1.3;
-      const vySq = vy * vy;
-      const row = y * outW;
-
-      for (let x = 0; x < outW; x++) {
-        const idx = (row + x) * 4;
-        let r = px[idx];
-        let g = px[idx + 1];
-        let b = px[idx + 2];
-
-        if (recipe.vignette > 0.01) {
-          const vx = (x / outW - 0.5) * 1.4;
-          const vig = 1 - Math.min(0.5, (vx * vx + vySq) * recipe.vignette * 0.38);
-          r *= vig;
-          g *= vig;
-          b *= vig;
+        if (clothesWeight > 0.08 && recipe.attireId !== 'keep-original') {
+          [fr, fg, fb] = applyAttireStyling(fr, fg, fb, recipe.attireId, clothesWeight);
         }
 
-        if (grainAmp > 0.3) {
-          const n = nextNoise() * grainAmp;
-          r += n;
-          g += n;
-          b += n;
+        const keyMul = computeKeyLightMultiplier(
+          nx,
+          ny,
+          framedFaceNx,
+          framedFaceNy,
+          recipe.lightingId,
+          recipe.keyLightStrength
+        );
+        const totalLight = exposureMul * keyMul;
+        fr *= totalLight;
+        fg *= totalLight;
+        fb *= totalLight;
+
+        if (recipe.warmth !== 0) {
+          const wShift = recipe.warmth * 22;
+          fr += wShift;
+          fg += wShift * 0.25;
+          fb -= wShift * 0.85;
         }
 
-        px[idx] = clampByte(r);
-        px[idx + 1] = clampByte(g);
-        px[idx + 2] = clampByte(b);
-        px[idx + 3] = 255;
+        const localContrast = skinWeight > 0.3 ? 1 + (contrastFactor - 1) * 0.65 : contrastFactor;
+        fr = (fr - 128) * localContrast + 128;
+        fg = (fg - 128) * localContrast + 128;
+        fb = (fb - 128) * localContrast + 128;
+
+        // Subtle ambient shadow integration so subject black levels match the backdrop
+        const lum = (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255;
+        const shadowBlend = Math.max(0, 1 - lum * 1.5) * 0.07;
+        fr = fr * (1 - shadowBlend) + ambR * shadowBlend;
+        fg = fg * (1 - shadowBlend) + ambG * shadowBlend;
+        fb = fb * (1 - shadowBlend) + ambB * shadowBlend;
+
+        // Edge spill suppression + subtle hair/shoulder studio rim light
+        if (alpha < 0.92) {
+          const edgeFactor = Math.sin(alpha * Math.PI);
+          const decon = (1 - alpha) * 0.28;
+          fr = fr * (1 - decon) + br * decon;
+          fg = fg * (1 - decon) + bg * decon;
+          fb = fb * (1 - decon) + bb * decon;
+
+          const upperBias = Math.max(0.25, 1.08 - ny * 0.8);
+          const rimPower =
+            edgeFactor * recipe.rimLight * 0.58 * upperBias * (0.45 + hairWeight * 0.55);
+
+          fr += (rimR - fr) * rimPower * 0.44;
+          fg += (rimG - fg) * rimPower * 0.44;
+          fb += (rimB - fb) * rimPower * 0.44;
+        }
+
+        if (recipe.monochrome) {
+          const mono = 0.36 * fr + 0.52 * fg + 0.12 * fb;
+          fr = mono * 1.015;
+          fg = mono * 1.005;
+          fb = mono * 0.985;
+        } else if (satFactor !== 1) {
+          const gray = 0.299 * fr + 0.587 * fg + 0.114 * fb;
+          fr = gray + (fr - gray) * satFactor;
+          fg = gray + (fg - gray) * satFactor;
+          fb = gray + (fb - gray) * satFactor;
+        }
+
+        // Exact floating-point source-over blend directly across the full viewport
+        const invAlpha = 1 - alpha;
+        outR = fr * alpha + br * invAlpha;
+        outG = fg * alpha + bg * invAlpha;
+        outB = fb * alpha + bb * invAlpha;
       }
+
+      if (applyVignette) {
+        const vx = (x / outW - 0.5) * 1.4;
+        const vig = 1 - Math.min(0.46, (vx * vx + vySq) * recipe.vignette * 0.36);
+        outR *= vig;
+        outG *= vig;
+        outB *= vig;
+      }
+
+      if (grainAmp > 0.3) {
+        const n = nextNoise() * grainAmp;
+        outR += n;
+        outG += n;
+        outB += n;
+      }
+
+      outPx[pIdx] = clampByte(outR);
+      outPx[pIdx + 1] = clampByte(outG);
+      outPx[pIdx + 2] = clampByte(outB);
+      outPx[pIdx + 3] = 255;
     }
-    outCtx.putImageData(finalData, 0, 0);
   }
 
-  // Produce pixel-aligned original crop with the exact same (cropX, cropY, cropW, cropH)
-  const { canvas: alignedCanvas, ctx: alignedCtx } = createCleanCanvas(outW, outH);
-  alignedCtx.drawImage(srcCanvas, cropX, cropY, cropW, cropH, 0, 0, outW, outH);
+  outCtx.putImageData(outImageData, 0, 0);
 
   return {
     imageUrl: outCanvas.toDataURL('image/png'),
-    alignedSourceUrl: alignedCanvas.toDataURL('image/jpeg', 0.92),
+    alignedSourceUrl: alignedSrcCanvas.toDataURL('image/jpeg', 0.92),
   };
 }

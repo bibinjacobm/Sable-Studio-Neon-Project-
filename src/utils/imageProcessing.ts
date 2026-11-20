@@ -1,5 +1,9 @@
 import JSZip from 'jszip';
 import type { GeneratedTake, SourcePortrait } from '../data/studioCatalog';
+import {
+  injectExifIntoDataUrl,
+  type PortraitExifMetadata,
+} from './exifMetadata';
 
 const ACCEPTED_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 const MAX_RAW_BYTES = 20 * 1024 * 1024;
@@ -84,13 +88,126 @@ export function buildPortraitFilename(frameNumber: number, styleName: string): s
   return `sable-studio-frame-${padded}-${slug}.png`;
 }
 
-export function downloadPortrait(imageUrl: string, frameNumber: number, styleName: string): void {
+export function buildTakeExifMetadata(take: GeneratedTake): PortraitExifMetadata {
+  return {
+    brand: 'Sable Studio',
+    styleName: take.styleName,
+    lightingLabel: take.lightingLabel,
+    framingLabel: take.framingLabel,
+    attireLabel: take.attireLabel,
+    aspectRatio: take.aspectRatio,
+    frameNumber: take.frameNumber,
+    retouchPrompt: take.retouchPrompt,
+    createdAt: take.createdAt,
+  };
+}
+
+export function downloadPortrait(
+  imageUrl: string,
+  frameNumber: number,
+  styleName: string,
+  exifMetadata?: PortraitExifMetadata
+): void {
+  const filename = buildPortraitFilename(frameNumber, styleName);
+  const resolvedMetadata: PortraitExifMetadata = exifMetadata ?? {
+    brand: 'Sable Studio',
+    styleName,
+    lightingLabel: 'Studio Lighting',
+    frameNumber,
+  };
+
+  let downloadHref = imageUrl;
+  let objectUrl: string | null = null;
+
+  try {
+    const { bytes, mimeType } = injectExifIntoDataUrl(imageUrl, resolvedMetadata);
+    const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+    objectUrl = URL.createObjectURL(blob);
+    downloadHref = objectUrl;
+  } catch {
+    // Graceful fallback to original data URL if binary decode fails
+  }
+
   const link = document.createElement('a');
-  link.href = imageUrl;
-  link.download = buildPortraitFilename(frameNumber, styleName);
+  link.href = downloadHref;
+  link.download = filename;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+
+  if (objectUrl) {
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 5000);
+  }
+}
+
+async function convertDataUrlToPngBlob(imageUrl: string): Promise<Blob> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.crossOrigin = 'anonymous';
+    el.onload = () => resolve(el);
+    el.onerror = () => reject(new Error('Unable to prepare image for clipboard.'));
+    el.src = imageUrl;
+  });
+
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, img.naturalWidth || img.width);
+  canvas.height = Math.max(1, img.naturalHeight || img.height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Canvas 2D context unavailable for clipboard export.');
+  }
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) {
+        resolve(blob);
+      } else {
+        reject(new Error('Could not encode PNG for clipboard.'));
+      }
+    }, 'image/png');
+  });
+}
+
+export async function copyPortraitToClipboard(
+  imageUrl: string,
+  exifMetadata?: PortraitExifMetadata
+): Promise<void> {
+  if (
+    typeof navigator === 'undefined' ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.write !== 'function' ||
+    typeof ClipboardItem === 'undefined'
+  ) {
+    throw new Error(
+      'Direct image clipboard copy is unavailable in this browser context. Use Download PNG instead.'
+    );
+  }
+
+  const { mimeType } = parseDataUrl(imageUrl);
+  let pngBlob: Blob;
+
+  if (mimeType === 'image/png') {
+    if (exifMetadata) {
+      const { bytes } = injectExifIntoDataUrl(imageUrl, exifMetadata);
+      pngBlob = new Blob([bytes.buffer as ArrayBuffer], { type: 'image/png' });
+    } else {
+      const response = await fetch(imageUrl);
+      pngBlob = await response.blob();
+    }
+  } else {
+    pngBlob = await convertDataUrlToPngBlob(imageUrl);
+  }
+
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': pngBlob })]);
+  } catch {
+    throw new Error(
+      'Clipboard write was blocked by browser permissions. Try again or use Download PNG.'
+    );
+  }
 }
 
 export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<void> {
@@ -106,8 +223,8 @@ export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<v
 
   for (const take of orderedTakes) {
     const filename = buildPortraitFilename(take.frameNumber, take.styleName);
-    const { base64 } = parseDataUrl(take.imageUrl);
-    zip.file(filename, base64, { base64: true });
+    const { bytes } = injectExifIntoDataUrl(take.imageUrl, buildTakeExifMetadata(take));
+    zip.file(filename, bytes);
 
     const frameLabel = String(take.frameNumber).padStart(2, '0');
     manifestLines.push(

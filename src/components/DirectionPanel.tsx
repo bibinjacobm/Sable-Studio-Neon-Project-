@@ -56,10 +56,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
 
   return (
-    <aside
-      aria-label="Studio direction controls"
-      className="flex flex-col gap-6 rounded-xl border border-white/[0.08] bg-[#141416] p-5 sm:p-6"
-    >
+    <div className="flex flex-col gap-6">
       <div className="border-b border-white/[0.07] pb-4">
         <h2 className="font-serif text-2xl font-semibold text-[#F5F1E8]">Studio Direction</h2>
         <p className="mt-0.5 text-xs text-[#9B968C]">
@@ -331,6 +328,6 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
           <span>{isGenerating ? 'Developing Portrait...' : 'Generate Studio Headshot'}</span>
         </button>
       )}
-    </aside>
+    </div>
   );
 };
