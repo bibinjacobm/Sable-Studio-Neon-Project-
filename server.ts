@@ -15,6 +15,7 @@ import {
   getFramingById,
   getLightingById,
   getStyleById,
+  getSubjectProfileById,
   suggestSmartCrop,
   type AspectRatioOption,
   type AttireId,
@@ -37,7 +38,11 @@ const MEDIAPIPE_MODEL_URLS = [
   'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
 ];
 
+const MEDIAPIPE_FACE_LANDMARKER_URL =
+  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task';
+
 let cachedModelBuffer: { buffer: Buffer; isMulticlass: boolean } | null = null;
+let cachedFaceLandmarkerBuffer: Buffer | null = null;
 
 function createGeminiClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -117,6 +122,32 @@ app.get('/api/mediapipe/model', async (_req, res) => {
   }
 });
 
+// Proxy & cache the open-source MediaPipe Face Landmarker model for client-side bilateral symmetry analysis
+app.get('/api/mediapipe/face-landmarker', async (_req, res) => {
+  try {
+    if (!cachedFaceLandmarkerBuffer) {
+      const upstream = await fetch(MEDIAPIPE_FACE_LANDMARKER_URL);
+      if (upstream.ok) {
+        const arr = await upstream.arrayBuffer();
+        cachedFaceLandmarkerBuffer = Buffer.from(arr);
+      }
+    }
+
+    if (!cachedFaceLandmarkerBuffer) {
+      res.status(502).json({ error: 'Unable to fetch face landmarker model.' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.send(cachedFaceLandmarkerBuffer);
+  } catch (err) {
+    res
+      .status(500)
+      .json({ error: err instanceof Error ? err.message : 'Face landmarker proxy error' });
+  }
+});
+
 /**
  * Free-tier AI Portrait Director (`gemini-4-hydrogen`)
  * Inspects uploaded selfie framing & lighting to return normalized face anchor coordinates
@@ -133,6 +164,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     detectedAnchor,
     lightingId,
     advancedLightingPreset,
+    subjectProfile,
     backdropBlur,
     aspectRatio,
     extraNotes,
@@ -144,6 +176,7 @@ app.post('/api/headshots/plan', async (req, res) => {
   const safeSmartCrop = Boolean(smartCrop);
   const safeLighting = getLightingById(lightingId);
   const safeAdvancedPreset = getAdvancedLightingPresetById(advancedLightingPreset);
+  const safeSubjectProfile = getSubjectProfileById(subjectProfile);
   const safeBackdropBlur = clamp(
     backdropBlur,
     0,
@@ -159,6 +192,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     smartCrop: safeSmartCrop,
     lightingId: safeLighting.id,
     advancedLightingPreset: safeAdvancedPreset.id,
+    subjectProfile: safeSubjectProfile.id,
     backdropBlur: safeBackdropBlur,
     aspectRatio: safeAspect,
     extraNotes: typeof extraNotes === 'string' ? extraNotes : '',
@@ -180,11 +214,16 @@ app.post('/api/headshots/plan', async (req, res) => {
             ...baseRecipe,
             framingId: smartSuggestion.framingId,
             zoomAdjust: smartSuggestion.zoomAdjust,
-            verticalOffset: smartSuggestion.verticalOffset,
+            verticalOffset: clamp(
+              smartSuggestion.verticalOffset + safeSubjectProfile.verticalBias,
+              -0.15,
+              0.15,
+              smartSuggestion.verticalOffset
+            ),
             smartCrop: true,
           }
         : baseRecipe,
-      directorNote: `Developed on ${safeStyle.name} with ${safeLighting.label.toLowerCase()} and calibrated tonal balance.`,
+      directorNote: `Developed on ${safeStyle.name} with ${safeLighting.label.toLowerCase()} and ${safeSubjectProfile.label.toLowerCase()} tonal profile.`,
     });
     return;
   }
@@ -210,15 +249,16 @@ app.post('/api/headshots/plan', async (req, res) => {
           },
           {
             text: `You are a master portrait darkroom colorist and camera operator calibrating a studio headshot transform.
-Inspect this uploaded selfie and return precise calibration parameters for compositing the subject onto the "${safeStyle.name}" studio backdrop with "${safeLighting.label}" lighting and "${safeFraming.label}" framing.${trimmedNotes ? `\nAdditional client direction: "${trimmedNotes}".` : ''}
+Inspect this uploaded selfie and return precise calibration parameters for compositing the subject onto the "${safeStyle.name}" studio backdrop with "${safeLighting.label}" lighting and "${safeFraming.label}" framing.
+Target Subject Profile: ${safeSubjectProfile.promptDirection}${trimmedNotes ? `\nAdditional client direction: "${trimmedNotes}".` : ''}
 
 Return:
 1. faceCenterX (0.15..0.85): horizontal center of the person's face in normalized image coordinates (0=left, 1=right).
 2. faceCenterY (0.12..0.75): vertical center of the person's eyes/bridge of nose (0=top, 1=bottom).
 3. faceHeightRatio (0.12..0.65): height of the head from chin to crown divided by total image height.
-4. exposureDelta (-0.25..+0.25): correction needed if the selfie is underexposed (+) or overexposed (-).
+4. exposureDelta (-0.25..+0.25): correction needed if the selfie is underexposed (+) or overexposed (-), honoring the target subject lighting profile.
 5. warmthDelta (-0.20..+0.20): white-balance correction if the selfie is too cool/blue (+) or too yellow/orange (-).
-6. contrastDelta (-0.15..+0.20): subtle tonal contrast polish.
+6. contrastDelta (-0.15..+0.20): subtle tonal contrast polish calibrated to the target subject profile.
 7. directorNote: One concise, specific sentence noting how lighting and framing were calibrated for this portrait.`,
           },
         ],
@@ -340,6 +380,7 @@ app.post('/api/headshots/retouch-recipe', async (req, res) => {
       lightingId: getLightingById(currentRecipe?.lightingId).id,
       advancedLightingPreset: getAdvancedLightingPresetById(currentRecipe?.advancedLightingPreset)
         .id,
+      subjectProfile: getSubjectProfileById(currentRecipe?.subjectProfile).id,
       backdropBlur: clamp(
         currentRecipe?.backdropBlur,
         0,
@@ -465,6 +506,7 @@ Rules:
       sharpen: clamp(fallbackRecipe.sharpen, 0, 1, 0),
       advancedLightingPreset: getAdvancedLightingPresetById(fallbackRecipe.advancedLightingPreset)
         .id,
+      subjectProfile: getSubjectProfileById(fallbackRecipe.subjectProfile).id,
     };
 
     res.json({

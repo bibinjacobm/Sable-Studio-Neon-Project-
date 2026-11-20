@@ -51,6 +51,22 @@ export interface LightingCompassAlignment {
   detailedSuggestion: string;
 }
 
+export interface EditorialGuideTip {
+  id: string;
+  category: 'Posture' | 'Light Source' | 'Exposure' | 'Diffusion';
+  priority: 'Priority' | 'Adjust' | 'Refine';
+  headline: string;
+  detail: string;
+}
+
+export interface EditorialLightingGuide {
+  rating: LightingQualityRating;
+  score: number;
+  summary: string;
+  primaryCue: string;
+  tips: EditorialGuideTip[];
+}
+
 export interface LightingHeatmapAnalysis {
   overlayDataUrl: string;
   shadowPercent: number;
@@ -762,5 +778,166 @@ export function evaluateLightingCompassAlignment(
     targetLabel,
     shortAdjustment,
     detailedSuggestion,
+  };
+}
+
+/**
+ * Generates real-time, text-based editorial coaching tips for physically adjusting
+ * subject posture, head angle, or light-source placement based on the live
+ * Lighting Quality analysis (plus compass alignment and optional head roll).
+ */
+export function buildEditorialLightingGuide(
+  report: LightingQualityReport,
+  compassAlignment?: LightingCompassAlignment | null,
+  headRollDeg?: number | null
+): EditorialLightingGuide {
+  const tips: EditorialGuideTip[] = [];
+  const isUnderlit =
+    report.lightDirectionStrength >= 0.22 &&
+    report.lightAngleDeg >= 135 &&
+    report.lightAngleDeg <= 225;
+  const isOverhead =
+    report.lightDirectionStrength >= 0.22 &&
+    (report.lightAngleDeg >= 338 || report.lightAngleDeg < 23);
+
+  // 1. Physical Posture & Head Orientation Cue
+  if (isUnderlit) {
+    tips.push({
+      id: 'posture-underlit',
+      category: 'Posture',
+      priority: 'Priority',
+      headline: 'Raise camera & dip chin slightly',
+      detail: `Low-angle light (${report.lightAngleDeg}°) casts upward shadows. Hold the lens just above eye level and face a higher window or lamp for natural brow shading.`,
+    });
+  } else if (isOverhead && report.shadowHarshnessScore >= 42) {
+    tips.push({
+      id: 'posture-overhead',
+      category: 'Posture',
+      priority: 'Priority',
+      headline: 'Lift chin ~10° toward the light',
+      detail: `Overhead light (${report.lightAngleDeg}°) deepens under-eye shadows. Tilt your chin slightly up or step 2 ft back from ceiling fixtures to brighten the eyes.`,
+    });
+  } else if (compassAlignment && compassAlignment.matchStatus === 'Cross-Lit') {
+    const turnDir = compassAlignment.deltaDeg > 0 ? 'left' : 'right';
+    const turnDeg = Math.min(25, Math.max(12, Math.round(compassAlignment.absDeltaDeg * 0.35)));
+    tips.push({
+      id: 'posture-crosslit',
+      category: 'Posture',
+      priority: 'Priority',
+      headline: `Rotate torso ~${turnDeg}° ${turnDir}`,
+      detail: `Source key (${report.lightOrientationLabel}) opposes ${compassAlignment.targetLabel}. Turn shoulders slightly ${turnDir} toward your main light so catchlights blend seamlessly.`,
+    });
+  } else if (compassAlignment && compassAlignment.matchStatus === 'Minor Offset') {
+    const turnDir = compassAlignment.deltaDeg > 0 ? 'left' : 'right';
+    const turnDeg = Math.min(18, Math.max(8, Math.round(compassAlignment.absDeltaDeg * 0.35)));
+    tips.push({
+      id: 'posture-offset',
+      category: 'Posture',
+      priority: 'Adjust',
+      headline: `Angle face ~${turnDeg}° ${turnDir}`,
+      detail: `A subtle ${turnDeg}° turn ${turnDir} aligns cheekbone highlights with ${compassAlignment.targetLabel} for cleaner studio relighting.`,
+    });
+  } else if (typeof headRollDeg === 'number' && Math.abs(headRollDeg) >= 4.5) {
+    const levelDir = headRollDeg > 0 ? 'counter-clockwise' : 'clockwise';
+    tips.push({
+      id: 'posture-roll',
+      category: 'Posture',
+      priority: 'Adjust',
+      headline: `Level head tilt (${Math.abs(headRollDeg).toFixed(1)}°)`,
+      detail: `Straighten your eyeline slightly ${levelDir} and relax both shoulders down to anchor balanced executive symmetry.`,
+    });
+  } else {
+    tips.push({
+      id: 'posture-refined',
+      category: 'Posture',
+      priority: 'Refine',
+      headline: 'Hold posture · extend chin gently',
+      detail: `Light orientation (${report.lightOrientationLabel}) is well aligned. Extending your forehead slightly forward sharpens jawline definition.`,
+    });
+  }
+
+  // 2. Light-Source Placement & Diffusion Cue
+  if (report.shadowHarshnessLabel === 'Harsh') {
+    tips.push({
+      id: 'light-harsh',
+      category: 'Diffusion',
+      priority: 'Priority',
+      headline: 'Soften key light or add white bounce',
+      detail: `Shadow transitions measure harsh (${report.shadowHarshnessScore}%). Diffuse direct light through a sheer curtain or stand near a bright white wall on your shadow side.`,
+    });
+  } else if (report.shadowHarshnessLabel === 'Moderate') {
+    tips.push({
+      id: 'light-moderate',
+      category: 'Light Source',
+      priority: 'Adjust',
+      headline: 'Position fill opposite the key side',
+      detail: `Moderate facial shadow depth (${report.shadowHarshnessScore}%). Place a pale reflector or step beside a light wall opposite ${report.lightOrientationLabel.toLowerCase()} to lift cheek shadows.`,
+    });
+  } else if (report.dynamicRangeLabel === 'Compressed' && report.lightDirectionStrength < 0.22) {
+    tips.push({
+      id: 'light-flat',
+      category: 'Light Source',
+      priority: 'Adjust',
+      headline: 'Turn 35° off-axis to one window',
+      detail: `Flat frontal fill compresses facial depth (${report.dynamicRangeScore}% range). Turning slightly sideways to a single window introduces subtle, sculpted cheek falloff.`,
+    });
+  } else {
+    tips.push({
+      id: 'light-balanced',
+      category: 'Light Source',
+      priority: 'Refine',
+      headline: 'Keep key ~45° above eye level',
+      detail: `Soft shadow rolloff (${report.shadowHarshnessScore}%) already reads naturally. Keep the primary light slightly above eye height to preserve crisp eye catchlights.`,
+    });
+  }
+
+  // 3. Exposure & Backdrop Separation Cue
+  if (report.clippedPercent >= 8 || (report.p98Percent >= 98 && report.highlightPercent >= 24)) {
+    tips.push({
+      id: 'exposure-clipped',
+      category: 'Exposure',
+      priority: 'Priority',
+      headline: 'Step out of direct glare',
+      detail: `${report.clippedPercent}% of pixels are clipped near peak white. Step 1–2 ft into open shade or angle away from bright backlight so skin highlights retain micro-texture.`,
+    });
+  } else if (report.meanLuminancePercent < 36 || report.shadowPercent >= 48) {
+    tips.push({
+      id: 'exposure-dark',
+      category: 'Exposure',
+      priority: 'Priority',
+      headline: 'Move closer to a daylight source',
+      detail: `Overall exposure sits dim (${report.meanLuminancePercent}% mean luminance). Stepping closer to a window lifts facial midtones cleanly and sharpens hair-edge isolation.`,
+    });
+  } else if (report.dynamicRangeLabel === 'Compressed') {
+    tips.push({
+      id: 'exposure-separation',
+      category: 'Exposure',
+      priority: 'Adjust',
+      headline: 'Step 3–4 ft away from wall behind you',
+      detail: `Dynamic range is narrow (${report.p02Percent}%–${report.p98Percent}%). Putting distance between your shoulders and the background prevents muddy edge shadows.`,
+    });
+  } else {
+    tips.push({
+      id: 'exposure-ready',
+      category: 'Exposure',
+      priority: 'Refine',
+      headline: 'Maintain eye-level lens distance',
+      detail: `Clean ${report.p02Percent}%–${report.p98Percent}% tonal window with ${report.midtonePercent}% midtones. Stand at arm's length or farther from the lens to avoid wide-angle distortion.`,
+    });
+  }
+
+  const summary =
+    report.rating === 'High'
+      ? `Studio-ready source light (${report.score}/100) — subtle posture refinements only.`
+      : report.rating === 'Med'
+        ? `Solid base light (${report.score}/100) — small posture or fill tweaks boost realism.`
+        : `Challenging source light (${report.score}/100) — adjust light & posture before re-shooting.`;
+
+  return {
+    rating: report.rating,
+    score: report.score,
+    summary,
+    primaryCue: tips[0]?.headline ?? 'Hold posture & level camera',
+    tips,
   };
 }

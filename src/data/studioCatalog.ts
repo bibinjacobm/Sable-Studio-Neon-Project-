@@ -27,6 +27,8 @@ export type AdvancedLightingPresetId =
   | 'noir-high-contrast'
   | 'soft-diffused';
 
+export type SubjectProfileId = 'androgynous' | 'masculine' | 'feminine';
+
 export type AspectRatioOption = '3:4' | '1:1' | '4:3';
 
 export interface DarkroomRecipe {
@@ -63,6 +65,8 @@ export interface DarkroomRecipe {
   sharpen?: number;
   /** Optional creative lighting preset override */
   advancedLightingPreset?: AdvancedLightingPresetId;
+  /** Target subject framing & lighting profile bias */
+  subjectProfile?: SubjectProfileId;
   /** Whether framing was auto-selected via facial alignment Smart Crop */
   smartCrop?: boolean;
 }
@@ -121,6 +125,7 @@ export interface StudioDirectionConfig {
   smartCrop: boolean;
   lightingId: LightingId;
   advancedLightingPreset: AdvancedLightingPresetId;
+  subjectProfile: SubjectProfileId;
   aspectRatio: AspectRatioOption;
   /** 0 to 20 px optical background bokeh blur */
   backdropBlur: number;
@@ -371,6 +376,48 @@ export const ADVANCED_LIGHTING_PRESETS: AdvancedLightingPresetOption[] = [
   },
 ];
 
+export interface SubjectProfileOption {
+  id: SubjectProfileId;
+  label: string;
+  shortSpec: string;
+  description: string;
+  promptDirection: string;
+  verticalBias: number;
+}
+
+export const SUBJECT_PROFILE_OPTIONS: SubjectProfileOption[] = [
+  {
+    id: 'androgynous',
+    label: 'Androgynous',
+    shortSpec: 'Balanced sculpting · Neutral fill',
+    description:
+      'Balanced editorial key-to-fill ratio with neutral highlight rolloff and centered eye-line poise.',
+    promptDirection:
+      'Androgynous editorial profile: maintain balanced key-to-fill contrast, neutral white balance, and clean centered eye-line framing.',
+    verticalBias: 0,
+  },
+  {
+    id: 'masculine',
+    label: 'Masculine',
+    shortSpec: 'Crisper contrast · Sculpted key',
+    description:
+      'Stronger directional key sculpting, crisper jawline micro-contrast, and grounded shoulder framing.',
+    promptDirection:
+      'Masculine portrait profile: favor slightly crisper tonal contrast, sculpted directional key lighting, and grounded shoulder framing.',
+    verticalBias: -0.012,
+  },
+  {
+    id: 'feminine',
+    label: 'Feminine',
+    shortSpec: 'Softer rolloff · Luminous fill',
+    description:
+      'Luminous beauty-dish fill, softer shadow transitions, warm skin midtones, and airy hair-rim glow.',
+    promptDirection:
+      'Feminine portrait profile: favor luminous midtone exposure, softer shadow contrast, warm flattering skin rolloff, and graceful headroom.',
+    verticalBias: 0.012,
+  },
+];
+
 export const ASPECT_RATIO_OPTIONS: { id: AspectRatioOption; label: string; useCase: string }[] = [
   { id: '3:4', label: '3:4 Portrait', useCase: 'Press & Bio' },
   { id: '1:1', label: '1:1 Square', useCase: 'LinkedIn & Avatar' },
@@ -406,6 +453,48 @@ export function getAdvancedLightingPresetById(id?: string): AdvancedLightingPres
   return (
     ADVANCED_LIGHTING_PRESETS.find((preset) => preset.id === id) ?? ADVANCED_LIGHTING_PRESETS[0]
   );
+}
+
+export function getSubjectProfileById(id?: string): SubjectProfileOption {
+  return (
+    SUBJECT_PROFILE_OPTIONS.find((profile) => profile.id === id) ?? SUBJECT_PROFILE_OPTIONS[0]
+  );
+}
+
+export function applySubjectProfileBias(
+  recipe: DarkroomRecipe,
+  profileId?: SubjectProfileId
+): DarkroomRecipe {
+  const profile = getSubjectProfileById(profileId);
+  if (profile.id === 'masculine') {
+    return {
+      ...recipe,
+      subjectProfile: 'masculine',
+      exposure: Math.max(-0.35, Math.min(0.35, recipe.exposure - 0.015)),
+      contrast: Math.max(-0.3, Math.min(0.4, recipe.contrast + 0.05)),
+      keyLightStrength: Math.max(0, Math.min(1, recipe.keyLightStrength + 0.1)),
+      vignette: Math.max(0, Math.min(0.75, recipe.vignette + 0.04)),
+      verticalOffset: Math.max(-0.15, Math.min(0.15, recipe.verticalOffset + profile.verticalBias)),
+    };
+  }
+  if (profile.id === 'feminine') {
+    return {
+      ...recipe,
+      subjectProfile: 'feminine',
+      exposure: Math.max(-0.35, Math.min(0.35, recipe.exposure + 0.035)),
+      contrast: Math.max(-0.3, Math.min(0.4, recipe.contrast - 0.05)),
+      warmth: recipe.monochrome
+        ? recipe.warmth
+        : Math.max(-0.35, Math.min(0.35, recipe.warmth + 0.025)),
+      keyLightStrength: Math.max(0, Math.min(1, recipe.keyLightStrength - 0.08)),
+      rimLight: Math.max(0, Math.min(1, recipe.rimLight + 0.08)),
+      verticalOffset: Math.max(-0.15, Math.min(0.15, recipe.verticalOffset + profile.verticalBias)),
+    };
+  }
+  return {
+    ...recipe,
+    subjectProfile: 'androgynous',
+  };
 }
 
 export function applyAdvancedLightingPreset(
@@ -551,6 +640,7 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
     smartCrop: Boolean(config.smartCrop),
     lightingId: config.lightingId,
     advancedLightingPreset: config.advancedLightingPreset ?? 'none',
+    subjectProfile: getSubjectProfileById(config.subjectProfile).id,
     aspectRatio: config.aspectRatio,
     exposure: base.exposure ?? 0.04,
     contrast: base.contrast ?? 0.1,
@@ -566,5 +656,6 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
     verticalOffset: 0,
     sharpen: 0,
   };
-  return applyAdvancedLightingPreset(baseRecipe, config.advancedLightingPreset);
+  const withSubjectBias = applySubjectProfileBias(baseRecipe, config.subjectProfile);
+  return applyAdvancedLightingPreset(withSubjectBias, config.advancedLightingPreset);
 }

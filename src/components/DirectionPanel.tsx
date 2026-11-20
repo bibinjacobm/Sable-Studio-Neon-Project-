@@ -7,12 +7,14 @@ import {
   FRAMING_OPTIONS,
   LIGHTING_OPTIONS,
   STUDIO_STYLES,
+  SUBJECT_PROFILE_OPTIONS,
   formatApertureFromBlur,
   getAdvancedLightingPresetById,
   getAttireById,
   getFramingById,
   getLightingById,
   getStyleById,
+  getSubjectProfileById,
   type AdvancedLightingPresetId,
   type AspectRatioOption,
   type AttireId,
@@ -23,6 +25,7 @@ import {
   type SourcePortrait,
   type StudioDirectionConfig,
   type StyleId,
+  type SubjectProfileId,
 } from '../data/studioCatalog';
 
 interface DirectionPanelProps {
@@ -39,6 +42,7 @@ interface DirectionPanelProps {
   onSmartCropToggle: (enabled: boolean) => void;
   onLightingSelect: (lightingId: LightingId) => void;
   onAdvancedLightingSelect: (presetId: AdvancedLightingPresetId) => void;
+  onSubjectProfileSelect: (profileId: SubjectProfileId) => void;
   onBackdropBlurChange: (blurPx: number) => void;
   onAspectRatioSelect: (ratio: AspectRatioOption) => void;
   onExtraNotesChange: (notes: string) => void;
@@ -46,6 +50,130 @@ interface DirectionPanelProps {
   onGenerate: () => void;
   onUploadClick: () => void;
 }
+
+interface FramingCropPreviewProps {
+  framingId: FramingId;
+  active: boolean;
+}
+
+/**
+ * Precision darkroom viewfinder crop icon illustrating the relative portrait crop area
+ * (Tight Headshot vs. Head & Shoulders vs. Mid-Chest Editorial).
+ */
+const FramingCropPreview: React.FC<FramingCropPreviewProps> = ({ framingId, active }) => {
+  const bracketStroke = active ? '#D4A853' : 'rgba(245, 241, 232, 0.34)';
+  const figureFill = active ? 'rgba(212, 168, 83, 0.24)' : 'rgba(245, 241, 232, 0.14)';
+  const figureStroke = active ? '#F5F1E8' : 'rgba(245, 241, 232, 0.58)';
+  const eyeLineStroke = active ? 'rgba(212, 168, 83, 0.48)' : 'rgba(255, 255, 255, 0.14)';
+
+  const eyeLineY = framingId === 'tight-headshot' ? 16 : framingId === 'head-shoulders' ? 13.5 : 11;
+
+  return (
+    <span
+      aria-hidden="true"
+      className={`flex h-[38px] w-[30px] shrink-0 items-center justify-center overflow-hidden rounded-[4px] border transition-colors duration-150 ${
+        active
+          ? 'border-[#D4A853]/65 bg-[#111113]'
+          : 'border-white/[0.1] bg-[#111113] group-hover/frame:border-white/25'
+      }`}
+    >
+      <svg width="30" height="38" viewBox="0 0 32 40" className="h-full w-full">
+        {/* Subtle horizontal eye-line reference guide */}
+        <line
+          x1="3"
+          y1={eyeLineY}
+          x2="29"
+          y2={eyeLineY}
+          stroke={eyeLineStroke}
+          strokeWidth="0.7"
+          strokeDasharray="1.8 1.8"
+        />
+
+        {/* Subject silhouette scaled accurately to each lens crop */}
+        {framingId === 'tight-headshot' && (
+          <g>
+            <path
+              d="M 3.5 40 Q 6.5 31.5 12.2 29.8 L 19.8 29.8 Q 25.5 31.5 28.5 40 Z"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+              strokeLinejoin="round"
+            />
+            <ellipse
+              cx="16"
+              cy="17"
+              rx="7.1"
+              ry="9.2"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+            />
+          </g>
+        )}
+
+        {framingId === 'head-shoulders' && (
+          <g>
+            <path
+              d="M 2.5 40 Q 4.2 27 12.4 24.4 L 19.6 24.4 Q 27.8 27 29.5 40 Z"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+              strokeLinejoin="round"
+            />
+            <ellipse
+              cx="16"
+              cy="14.2"
+              rx="5.2"
+              ry="6.7"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+            />
+          </g>
+        )}
+
+        {framingId === 'mid-chest' && (
+          <g>
+            <path
+              d="M 5 40 L 6.3 25.2 Q 7.4 20.5 13 19.6 L 19 19.6 Q 24.6 20.5 25.7 25.2 L 27 40 Z"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+              strokeLinejoin="round"
+            />
+            {/* Subtle collar/lapel V-line to communicate upper-torso depth */}
+            <path
+              d="M 13.4 20 L 16 25.5 L 18.6 20"
+              fill="none"
+              stroke={figureStroke}
+              strokeWidth="0.85"
+              strokeOpacity="0.65"
+            />
+            <ellipse
+              cx="16"
+              cy="11.4"
+              rx="4"
+              ry="5.1"
+              fill={figureFill}
+              stroke={figureStroke}
+              strokeWidth="1.05"
+            />
+          </g>
+        )}
+
+        {/* Optical viewfinder corner crop brackets */}
+        <path
+          d="M 3 7.5 L 3 3 L 7.5 3 M 24.5 3 L 29 3 L 29 7.5 M 3 32.5 L 3 37 L 7.5 37 M 24.5 37 L 29 37 L 29 32.5"
+          fill="none"
+          stroke={bracketStroke}
+          strokeWidth="1.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+};
 
 export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   config,
@@ -61,6 +189,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   onSmartCropToggle,
   onLightingSelect,
   onAdvancedLightingSelect,
+  onSubjectProfileSelect,
   onBackdropBlurChange,
   onAspectRatioSelect,
   onExtraNotesChange,
@@ -74,6 +203,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   const roundedBlur = Math.max(0, Math.min(20, Math.round(config.backdropBlur)));
   const apertureLabel = formatApertureFromBlur(roundedBlur);
   const selectedAdvancedPreset = getAdvancedLightingPresetById(config.advancedLightingPreset);
+  const selectedSubjectProfile = getSubjectProfileById(config.subjectProfile);
 
   return (
     <div className="flex flex-col gap-6">
@@ -221,6 +351,52 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
         </div>
       </div>
 
+      {/* Target Subject Type Framing & Lighting Profile Dropdown */}
+      <div className="border-t border-white/[0.07] pt-4">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <label
+            htmlFor="target-subject-type"
+            className="text-xs font-semibold text-[#F5F1E8] whitespace-nowrap"
+          >
+            Target Subject Type
+          </label>
+          <span className="truncate text-[11px] text-[#9B968C]">
+            {selectedSubjectProfile.shortSpec}
+          </span>
+        </div>
+
+        <div className="relative">
+          <select
+            id="target-subject-type"
+            value={config.subjectProfile}
+            onChange={(e) => onSubjectProfileSelect(e.target.value as SubjectProfileId)}
+            className={`min-h-[42px] w-full appearance-none rounded-md border bg-[#0B0B0C] py-2 pr-9 pl-3 text-xs font-medium text-[#F5F1E8] transition-colors duration-150 focus:border-[#D4A853] focus:outline-none cursor-pointer ${
+              config.subjectProfile !== 'androgynous'
+                ? 'border-[#D4A853]/70'
+                : 'border-white/[0.1] hover:border-white/25'
+            }`}
+          >
+            {SUBJECT_PROFILE_OPTIONS.map((profile) => (
+              <option
+                key={profile.id}
+                value={profile.id}
+                className="bg-[#141416] text-[#F5F1E8]"
+              >
+                {profile.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-[#9B968C]"
+            aria-hidden="true"
+          />
+        </div>
+
+        <p className="mt-1.5 text-[11px] leading-relaxed text-[#9B968C]">
+          {selectedSubjectProfile.description}
+        </p>
+      </div>
+
       {/* 03. Lens Framing & 04. Studio Lighting */}
       <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
         <div>
@@ -274,20 +450,31 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
                   type="button"
                   onClick={() => onFramingSelect(option.id)}
                   aria-pressed={active}
-                  className={`flex min-h-[38px] items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-xs transition-colors duration-150 cursor-pointer ${
+                  className={`group/frame flex min-h-[50px] items-center gap-2.5 rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
                     active
                       ? 'border-[#D4A853] bg-[#D4A853]/12 text-[#F5F1E8]'
                       : 'border-white/[0.08] bg-[#0B0B0C] text-[#9B968C] hover:border-white/20 hover:text-[#F5F1E8]'
                   }`}
                 >
-                  <span className="font-medium whitespace-nowrap truncate">{option.label}</span>
-                  <span
-                    className={`font-mono text-[11px] whitespace-nowrap shrink-0 ${
-                      isAutoSuggested ? 'text-[#D4A853]' : 'text-[#9B968C]'
-                    }`}
-                  >
-                    {isAutoSuggested ? `Auto · ${option.shortSpec}` : option.shortSpec}
-                  </span>
+                  <FramingCropPreview framingId={option.id} active={active} />
+                  <div className="min-w-0 flex-1">
+                    <span className="block truncate font-medium whitespace-nowrap">
+                      {option.label}
+                    </span>
+                    <span
+                      className={`mt-0.5 block truncate font-mono text-[10px] tabular-nums whitespace-nowrap ${
+                        isAutoSuggested ? 'text-[#D4A853]' : 'text-[#9B968C]'
+                      }`}
+                    >
+                      {isAutoSuggested ? `Auto · ${option.shortSpec}` : option.shortSpec}
+                    </span>
+                  </div>
+                  {active && (
+                    <Check
+                      className="h-3.5 w-3.5 shrink-0 text-[#D4A853]"
+                      aria-hidden="true"
+                    />
+                  )}
                 </button>
               );
             })}

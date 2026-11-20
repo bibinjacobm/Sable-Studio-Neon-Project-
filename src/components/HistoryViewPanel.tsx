@@ -62,6 +62,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>('newest');
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [peekingSourceById, setPeekingSourceById] = useState<Record<string, boolean>>({});
   const [isBatchMode, setIsBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [portfolioTitle, setPortfolioTitle] = useState('');
@@ -545,7 +546,12 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
               {visibleTakes.map((take) => {
                 const isActive = take.id === activeTakeId;
                 const isSelected = validSelectedIdSet.has(take.id);
-                const imgFailed = failedImages[take.id];
+                const sourceThumbUrl = take.alignedSourceUrl || take.sourceImageUrl;
+                const hasSource = Boolean(sourceThumbUrl);
+                const isShowingSource = hasSource && Boolean(peekingSourceById[take.id]);
+                const activeThumbUrl = isShowingSource ? sourceThumbUrl : take.imageUrl;
+                const imgErrorKey = `${take.id}:${isShowingSource ? 'source' : 'result'}`;
+                const imgFailed = failedImages[imgErrorKey];
                 const frameLabel = String(take.frameNumber).padStart(2, '0');
                 const timeLabel = formatTakeTime(take.createdAt);
                 const isHighlighted = isBatchMode ? isSelected : isActive;
@@ -553,7 +559,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                 return (
                   <article
                     key={take.id}
-                    className={`group relative flex flex-col overflow-hidden rounded-lg border transition-[transform,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform hover:z-10 hover:scale-[1.025] hover:shadow-[0_12px_28px_rgba(0,0,0,0.48)] focus-within:z-10 focus-within:scale-[1.015] active:scale-[0.99] motion-reduce:transition-none motion-reduce:hover:scale-100 motion-reduce:focus-within:scale-100 motion-reduce:active:scale-100 ${
+                    className={`group relative flex flex-col overflow-hidden rounded-lg border transition-[transform,border-color,box-shadow] duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform hover:z-10 hover:scale-[1.025] hover:shadow-[0_12px_28px_rgba(0,0,0,0.48)] focus-within:z-10 focus-within:scale-[1.015] motion-reduce:transition-none motion-reduce:hover:scale-100 motion-reduce:focus-within:scale-100 ${
                       isHighlighted
                         ? 'border-[#D4A853] bg-[#18181B] ring-1 ring-[#D4A853]/45'
                         : 'border-white/[0.08] bg-[#0B0B0C] hover:border-[#D4A853]/55'
@@ -571,7 +577,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                         isBatchMode
                           ? `${isSelected ? 'Deselect' : 'Select'} take ${frameLabel}, ${
                               take.styleName
-                            } for batch ZIP export`
+                            } for batch export`
                           : `Select take ${frameLabel}, ${take.styleName}${
                               isActive ? ' (currently active)' : ''
                             }`
@@ -580,18 +586,24 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                     >
                       {!imgFailed ? (
                         <img
-                          src={take.imageUrl}
-                          alt={`Take ${frameLabel} — ${take.styleName}`}
+                          src={activeThumbUrl}
+                          alt={
+                            isShowingSource
+                              ? `Take ${frameLabel} — Original input selfie`
+                              : `Take ${frameLabel} — ${take.styleName}`
+                          }
                           referrerPolicy="no-referrer"
                           onError={() =>
-                            setFailedImages((prev) => ({ ...prev, [take.id]: true }))
+                            setFailedImages((prev) => ({ ...prev, [imgErrorKey]: true }))
                           }
-                          className="h-full w-full object-cover transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform group-hover:scale-[1.05] group-focus-within:scale-[1.04] group-active:scale-[1.02] motion-reduce:transition-none motion-reduce:group-hover:scale-100 motion-reduce:group-focus-within:scale-100 motion-reduce:group-active:scale-100"
+                          className="h-full w-full object-cover transition-transform duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] will-change-transform group-hover:scale-[1.05] group-focus-within:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100 motion-reduce:group-focus-within:scale-100"
                         />
                       ) : (
                         <div className="flex h-full w-full flex-col items-center justify-center gap-1.5 bg-[#1C1C1F] px-2 text-center text-[#9B968C]">
                           <Camera className="h-5 w-5" aria-hidden="true" />
-                          <span className="text-[11px]">{take.styleName}</span>
+                          <span className="text-[11px]">
+                            {isShowingSource ? 'Original Source' : take.styleName}
+                          </span>
                         </div>
                       )}
 
@@ -628,13 +640,15 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                         )}
                       </div>
 
-                      {/* Bottom Contrast Scrim: Retouch note or timestamp */}
+                      {/* Bottom Contrast Scrim: Source peek indicator, Retouch note, or timestamp */}
                       <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-2.5 pt-6 pb-2">
                         <p className="truncate text-[11px] text-[#F5F1E8]/90">
-                          {take.retouchPrompt ? (
+                          {isShowingSource ? (
+                            <span className="font-medium text-[#D4A853]">Original source</span>
+                          ) : take.retouchPrompt ? (
                             <span className="text-[#D4A853]">Retouched</span>
                           ) : (
-                            <span>Original pass</span>
+                            <span>Studio result</span>
                           )}
                           {timeLabel && (
                             <>
@@ -649,6 +663,44 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                         </p>
                       </div>
                     </button>
+
+                    {/* Per-Card Source vs. Result Quick Peek Toggle */}
+                    {hasSource && (
+                      <div
+                        role="group"
+                        aria-label={`Toggle Source or Result preview for take ${frameLabel}`}
+                        className="grid grid-cols-2 gap-0.5 border-y border-white/[0.06] bg-[#111113] p-1"
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPeekingSourceById((prev) => ({ ...prev, [take.id]: true }))
+                          }
+                          aria-pressed={isShowingSource}
+                          className={`min-h-[26px] rounded-[4px] px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                            isShowingSource
+                              ? 'bg-[#D4A853]/18 text-[#D4A853]'
+                              : 'text-[#9B968C] hover:bg-white/[0.04] hover:text-[#F5F1E8]'
+                          }`}
+                        >
+                          Source
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setPeekingSourceById((prev) => ({ ...prev, [take.id]: false }))
+                          }
+                          aria-pressed={!isShowingSource}
+                          className={`min-h-[26px] rounded-[4px] px-2 py-0.5 text-[11px] font-medium whitespace-nowrap transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                            !isShowingSource
+                              ? 'bg-[#26262B] text-[#F5F1E8]'
+                              : 'text-[#9B968C] hover:bg-white/[0.04] hover:text-[#F5F1E8]'
+                          }`}
+                        >
+                          Result
+                        </button>
+                      </div>
+                    )}
 
                     {/* Clean Unboxed Metadata & Quick Frame Actions */}
                     <div className="flex items-center justify-between gap-1.5 px-2.5 py-2">

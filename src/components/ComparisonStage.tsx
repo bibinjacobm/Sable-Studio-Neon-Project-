@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BookOpen,
   Compass,
   Download,
   Expand,
@@ -23,13 +24,21 @@ import {
 } from '../data/studioCatalog';
 import {
   analyzeLightingQuality,
+  buildEditorialLightingGuide,
   evaluateLightingCompassAlignment,
   generateLightingHeatmap,
   type LightingHeatmapAnalysis,
   type LightingQualityReport,
 } from '../utils/lightingHeatmap';
+import {
+  analyzeFacialSymmetry,
+  type FacialSymmetryReport,
+} from '../utils/facialSymmetry';
+import { EditorialLightingGuideOverlay } from './EditorialLightingGuideOverlay';
 import { LightingCompassOverlay } from './LightingCompassOverlay';
 import { LightingHistogram } from './LightingHistogram';
+import { SymmetryAnalysisCard } from './SymmetryAnalysisCard';
+import { SymmetryAxisOverlay } from './SymmetryAxisOverlay';
 
 interface ComparisonStageProps {
   sourcePortrait: SourcePortrait | null;
@@ -87,9 +96,13 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
   const [showCompass, setShowCompass] = useState(true);
+  const [showLightingGuide, setShowLightingGuide] = useState(true);
+  const [showSymmetryAxis, setShowSymmetryAxis] = useState(false);
   const [heatmapAnalysis, setHeatmapAnalysis] = useState<LightingHeatmapAnalysis | null>(null);
   const [lightingQuality, setLightingQuality] = useState<LightingQualityReport | null>(null);
   const [isAnalyzingQuality, setIsAnalyzingQuality] = useState(false);
+  const [symmetryReport, setSymmetryReport] = useState<FacialSymmetryReport | null>(null);
+  const [isAnalyzingSymmetry, setIsAnalyzingSymmetry] = useState(false);
   const [isCompareTooltipOpen, setIsCompareTooltipOpen] = useState(false);
   const sliderContainerRef = useRef<HTMLDivElement | null>(null);
   const isPointerDownRef = useRef(false);
@@ -141,10 +154,18 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   }, [isCompareTooltipOpen, closeCompareTooltipNow]);
 
   const inputSelfieUrl = sourcePortrait?.dataUrl ?? activeTake?.sourceImageUrl ?? null;
+  const symmetryTargetUrl = activeTake?.imageUrl ?? sourcePortrait?.dataUrl ?? null;
   const effectiveAnchor = activeTake?.anchor ?? detectedAnchor;
   const beforeSourceUrl = activeTake
     ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
     : sourcePortrait?.dataUrl ?? null;
+
+  const stageAspectRatio =
+    activeTake?.aspectRatio === '1:1'
+      ? 1
+      : activeTake?.aspectRatio === '4:3'
+        ? 4 / 3
+        : 3 / 4;
 
   const canCompare = Boolean(activeTake && activeTake.sourceImageUrl);
   const isBeforeViewVisible = Boolean(
@@ -160,6 +181,15 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
       : currentAdvancedLightingPreset;
     return evaluateLightingCompassAlignment(lightingQuality, targetLighting, targetAdvanced);
   }, [lightingQuality, activeTake, currentLightingId, currentAdvancedLightingPreset]);
+
+  const editorialGuide = useMemo(() => {
+    if (!lightingQuality) return null;
+    return buildEditorialLightingGuide(
+      lightingQuality,
+      compassAlignment,
+      symmetryReport?.headRollDeg ?? null
+    );
+  }, [lightingQuality, compassAlignment, symmetryReport?.headRollDeg]);
 
   useEffect(() => {
     if (!inputSelfieUrl) {
@@ -191,6 +221,38 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
       cancelled = true;
     };
   }, [inputSelfieUrl, effectiveAnchor]);
+
+  useEffect(() => {
+    if (!symmetryTargetUrl) {
+      setSymmetryReport(null);
+      setIsAnalyzingSymmetry(false);
+      setShowSymmetryAxis(false);
+      return;
+    }
+
+    let cancelled = false;
+    setIsAnalyzingSymmetry(true);
+    void analyzeFacialSymmetry(symmetryTargetUrl, effectiveAnchor)
+      .then((report) => {
+        if (!cancelled) {
+          setSymmetryReport(report);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSymmetryReport(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setIsAnalyzingSymmetry(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [symmetryTargetUrl, effectiveAnchor]);
 
   useEffect(() => {
     if (!beforeSourceUrl) {
@@ -483,6 +545,26 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                   <span>Compass</span>
                 </button>
               )}
+
+              {editorialGuide && (
+                <button
+                  type="button"
+                  onClick={() => setShowLightingGuide((prev) => !prev)}
+                  aria-pressed={showLightingGuide}
+                  title="Toggle Editorial Lighting Guide overlay"
+                  className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                    showLightingGuide
+                      ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                      : 'border-white/[0.09] bg-[#141416] text-[#9B968C] hover:border-white/25 hover:text-[#F5F1E8]'
+                  }`}
+                >
+                  <BookOpen
+                    className={`h-3.5 w-3.5 shrink-0 ${showLightingGuide ? 'text-[#D4A853]' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>Guide</span>
+                </button>
+              )}
             </>
           )}
 
@@ -602,6 +684,11 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
               className="h-full w-full object-cover"
             />
 
+            {/* Optional Bilateral Facial Symmetry Midline & Landmark Overlay */}
+            {showSymmetryAxis && symmetryReport && (
+              <SymmetryAxisOverlay report={symmetryReport} containerAspect={stageAspectRatio} />
+            )}
+
             {/* Dynamic Draggable Overlay Layer: Pixel-Aligned Original Selfie (+ optional Light Map) */}
             {canCompare && (
               <>
@@ -659,6 +746,14 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                     After · Studio
                   </span>
                 </div>
+
+                {/* Editorial Lighting Guide Overlay */}
+                {showLightingGuide && editorialGuide && (
+                  <EditorialLightingGuideOverlay
+                    guide={editorialGuide}
+                    onHide={() => setShowLightingGuide(false)}
+                  />
+                )}
 
                 {/* Lighting Direction Compass Overlay */}
                 {showCompass && compassAlignment && (
@@ -721,6 +816,15 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"
               />
+              {showSymmetryAxis && symmetryReport && (
+                <SymmetryAxisOverlay report={symmetryReport} containerAspect={3 / 4} />
+              )}
+              {showLightingGuide && editorialGuide && (
+                <EditorialLightingGuideOverlay
+                  guide={editorialGuide}
+                  onHide={() => setShowLightingGuide(false)}
+                />
+              )}
               {showCompass && compassAlignment && (
                 <LightingCompassOverlay alignment={compassAlignment} />
               )}
@@ -951,6 +1055,18 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                           </button>
                         </>
                       )}
+                      {editorialGuide && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <button
+                            type="button"
+                            onClick={() => setShowLightingGuide((prev) => !prev)}
+                            className="font-medium text-[#F5F1E8] underline decoration-white/30 underline-offset-4 transition-colors hover:text-[#D4A853] hover:decoration-[#D4A853]/60 whitespace-nowrap cursor-pointer"
+                          >
+                            {showLightingGuide ? 'Hide Guide' : 'Lighting Guide'}
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -1033,6 +1149,14 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
           )}
         </div>
       )}
+
+      {/* Facial Landmark Bilateral Symmetry Analysis Indicator */}
+      <SymmetryAnalysisCard
+        report={symmetryReport}
+        isAnalyzing={isAnalyzingSymmetry}
+        showAxis={showSymmetryAxis}
+        onToggleAxis={() => setShowSymmetryAxis((prev) => !prev)}
+      />
 
       {/* Quiet Director Note under active frame */}
       {activeTake?.directorNote && (

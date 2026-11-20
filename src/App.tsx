@@ -8,6 +8,7 @@ import {
   getFramingById,
   getLightingById,
   getStyleById,
+  getSubjectProfileById,
   suggestSmartCrop,
   type AdvancedLightingPresetId,
   type AspectRatioOption,
@@ -21,6 +22,7 @@ import {
   type SourcePortrait,
   type StudioDirectionConfig,
   type StyleId,
+  type SubjectProfileId,
 } from './data/studioCatalog';
 import { TopBar } from './components/TopBar';
 import { ComparisonStage } from './components/ComparisonStage';
@@ -58,6 +60,7 @@ const INITIAL_CONFIG: StudioDirectionConfig = {
   smartCrop: true,
   lightingId: 'softbox-key',
   advancedLightingPreset: 'none',
+  subjectProfile: 'androgynous',
   aspectRatio: '3:4',
   backdropBlur: 4,
   extraNotes: '',
@@ -273,6 +276,7 @@ export default function App() {
         detectedAnchor,
         lightingId: config.lightingId,
         advancedLightingPreset: config.advancedLightingPreset,
+        subjectProfile: config.subjectProfile,
         backdropBlur: config.backdropBlur,
         aspectRatio: config.aspectRatio,
         extraNotes: config.extraNotes,
@@ -297,11 +301,12 @@ export default function App() {
       setDetectedAnchor(anchor);
       if (config.smartCrop) {
         const suggestion = suggestSmartCrop(anchor, config.aspectRatio);
+        const profileBias = getSubjectProfileById(config.subjectProfile).verticalBias;
         recipe = {
           ...recipe,
           framingId: suggestion.framingId,
           zoomAdjust: suggestion.zoomAdjust,
-          verticalOffset: suggestion.verticalOffset,
+          verticalOffset: Math.max(-0.15, Math.min(0.15, suggestion.verticalOffset + profileBias)),
           smartCrop: true,
         };
       }
@@ -1116,6 +1121,9 @@ export default function App() {
                       lightingId: preset.targetLightingId ?? prev.lightingId,
                     }));
                   }}
+                  onSubjectProfileSelect={(subjectProfile: SubjectProfileId) =>
+                    setConfig((prev) => ({ ...prev, subjectProfile }))
+                  }
                   onBackdropBlurChange={handleBackdropBlurChange}
                   onAspectRatioSelect={(aspectRatio: AspectRatioOption) =>
                     setConfig((prev) => ({ ...prev, aspectRatio }))

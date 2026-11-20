@@ -2,6 +2,7 @@ import { jsPDF } from 'jspdf';
 import {
   formatApertureFromBlur,
   getAdvancedLightingPresetById,
+  getSubjectProfileById,
   type GeneratedTake,
 } from '../data/studioCatalog';
 
@@ -49,13 +50,10 @@ function formatTakeTimestamp(timestamp: number): string {
 }
 
 /**
- * Normalizes a portrait data URL into a clean high-resolution JPEG sized for print/screen PDF
- * so multi-take portfolios remain crisp while keeping PDF file sizes compact.
+ * Normalizes a portrait data URL into a crisp JPEG sized for print/screen PDF
+ * while preserving its exact natural aspect ratio and keeping PDF file sizes compact.
  */
-async function preparePortraitForPdf(
-  imageUrl: string,
-  targetBoxAspect: number
-): Promise<PreparedImage> {
+async function preparePortraitForPdf(imageUrl: string): Promise<PreparedImage> {
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const el = new Image();
     el.crossOrigin = 'anonymous';
@@ -66,9 +64,7 @@ async function preparePortraitForPdf(
 
   const srcW = Math.max(1, img.naturalWidth || img.width);
   const srcH = Math.max(1, img.naturalHeight || img.height);
-  const srcAspect = srcW / srcH;
 
-  // Preserve full portrait framing without distorting aspect ratio; cap resolution to 960px longest edge
   const maxDim = 960;
   let outW = srcW;
   let outH = srcH;
@@ -77,11 +73,6 @@ async function preparePortraitForPdf(
     outW = Math.max(64, Math.round(outW * scale));
     outH = Math.max(64, Math.round(outH * scale));
   }
-
-  // If image aspect is close to target box, preserve exact framing; otherwise keep natural aspect
-  // and let PDF layout center-contain cleanly inside the darkroom matte window.
-  void targetBoxAspect;
-  void srcAspect;
 
   const canvas = document.createElement('canvas');
   canvas.width = outW;
@@ -100,6 +91,34 @@ async function preparePortraitForPdf(
     width: outW,
     height: outH,
   };
+}
+
+function drawContainedImage(
+  doc: jsPDF,
+  prepared: PreparedImage,
+  boxX: number,
+  boxY: number,
+  boxW: number,
+  boxH: number
+): void {
+  const imgAspect = prepared.width / Math.max(1, prepared.height);
+  const boxAspect = boxW / Math.max(1, boxH);
+  let drawW = boxW;
+  let drawH = boxH;
+  let drawX = boxX;
+  let drawY = boxY;
+
+  if (imgAspect > boxAspect) {
+    drawW = boxW;
+    drawH = boxW / imgAspect;
+    drawY = boxY + (boxH - drawH) / 2;
+  } else {
+    drawH = boxH;
+    drawW = boxH * imgAspect;
+    drawX = boxX + (boxW - drawW) / 2;
+  }
+
+  doc.addImage(prepared.dataUrl, 'JPEG', drawX, drawY, drawW, drawH, undefined, 'FAST');
 }
 
 function slugifyFilename(input: string): string {
@@ -125,7 +144,8 @@ function truncateLine(doc: jsPDF, text: string, maxWidthMm: number): string {
 
 /**
  * Generates and downloads a branded Sable Studio editorial darkroom PDF contact sheet
- * aggregating the selected takes alongside their full generation metadata and styling parameters.
+ * featuring side-by-side Before (Original Selfie) vs. After (Studio Portrait) comparison plates
+ * paired with full generation metadata and styling specifications.
  */
 export async function exportPortfolioPdf(
   takes: GeneratedTake[],
@@ -139,7 +159,8 @@ export async function exportPortfolioPdf(
   const customTitle = options?.title?.trim();
   const portfolioTitle = customTitle || 'Editorial Portrait Contact Sheet';
   const portfolioSubtitle =
-    options?.subtitle?.trim() || 'Curated Darkroom Portfolio · Generation & Styling Specifications';
+    options?.subtitle?.trim() ||
+    'Before & After Darkroom Comparison · Generation & Styling Specifications';
 
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -150,7 +171,7 @@ export async function exportPortfolioPdf(
 
   doc.setProperties({
     title: `Sable Studio — ${portfolioTitle}`,
-    subject: 'Editorial Headshot Contact Sheet & Styling Parameters',
+    subject: 'Before & After Editorial Headshot Portfolio & Styling Parameters',
     author: 'Sable Studio',
     creator: 'Sable Studio Editorial Darkroom',
   });
@@ -160,6 +181,8 @@ export async function exportPortfolioPdf(
   const CARD_SURFACE: [number, number, number] = [21, 21, 24];
   const PHOTO_WELL: [number, number, number] = [10, 10, 12];
   const BORDER_HAIRLINE: [number, number, number] = [44, 44, 50];
+  const BORDER_SUBTLE: [number, number, number] = [36, 36, 42];
+  const BORDER_BRASS_SOFT: [number, number, number] = [122, 98, 52];
   const TEXT_IVORY: [number, number, number] = [245, 241, 232];
   const TEXT_MUTED: [number, number, number] = [155, 150, 140];
   const TEXT_DIM: [number, number, number] = [115, 110, 102];
@@ -169,19 +192,38 @@ export async function exportPortfolioPdf(
   const pageH = 297;
   const marginX = 14;
   const contentW = pageW - marginX * 2; // 182mm
-  const colGap = 6;
-  const rowGap = 6;
-  const cardW = (contentW - colGap) / 2; // 88mm
+  const rowGap = 7;
 
-  const takesPerPage = 4;
+  // 2 full-width Before/After diptych comparison spreads per A4 page
+  const takesPerPage = 2;
   const totalPages = Math.ceil(orderedTakes.length / takesPerPage);
   const exportDateStr = formatSessionDate(Date.now());
   const uniqueStyles = Array.from(new Set(orderedTakes.map((t) => t.styleName)));
   const uniqueRatios = Array.from(new Set(orderedTakes.map((t) => t.aspectRatio)));
 
-  // Pre-encode all selected frames cleanly before drawing pages
-  const preparedImages = await Promise.all(
-    orderedTakes.map((take) => preparePortraitForPdf(take.imageUrl, 82 / 64))
+  // Deduplicate image encoding by URL so shared source selfies encode once cleanly
+  const imageMemo = new Map<string, Promise<PreparedImage | null>>();
+  const getPreparedImage = (url: string | undefined): Promise<PreparedImage | null> => {
+    if (!url) return Promise.resolve(null);
+    const existing = imageMemo.get(url);
+    if (existing) return existing;
+    const task = preparePortraitForPdf(url).catch(() => null);
+    imageMemo.set(url, task);
+    return task;
+  };
+
+  const preparedPairs = await Promise.all(
+    orderedTakes.map(async (take) => {
+      const sourceUrl = take.alignedSourceUrl || take.sourceImageUrl;
+      const [resultImg, sourceImg] = await Promise.all([
+        getPreparedImage(take.imageUrl),
+        getPreparedImage(sourceUrl),
+      ]);
+      if (!resultImg) {
+        throw new Error(`Unable to encode take ${take.frameNumber} for PDF export.`);
+      }
+      return { resultImg, sourceImg };
+    })
   );
 
   for (let pageIdx = 0; pageIdx < totalPages; pageIdx++) {
@@ -197,7 +239,7 @@ export async function exportPortfolioPdf(
     const endTakeIndex = Math.min(orderedTakes.length, startTakeIndex + takesPerPage);
     const pageTakes = orderedTakes.slice(startTakeIndex, endTakeIndex);
 
-    let gridTopY = 39;
+    let gridTopY = 38;
 
     if (pageIdx === 0) {
       // Branded Cover Masthead
@@ -231,17 +273,17 @@ export async function exportPortfolioPdf(
       const ratiosSummary = `FORMATS: ${uniqueRatios.join(' / ')}`;
       doc.text(truncateLine(doc, ratiosSummary, 64), pageW - marginX, 23, { align: 'right' });
 
-      const stylesSummary = `${uniqueStyles.length} ${
-        uniqueStyles.length === 1 ? 'ENVIRONMENT' : 'ENVIRONMENTS'
+      const stylesSummary = `BEFORE / AFTER · ${uniqueStyles.length} ${
+        uniqueStyles.length === 1 ? 'STYLE' : 'STYLES'
       }`;
-      doc.text(stylesSummary, pageW - marginX, 28, { align: 'right' });
+      doc.text(truncateLine(doc, stylesSummary, 64), pageW - marginX, 28, { align: 'right' });
 
       // Signature brass hairline divider
       doc.setDrawColor(...ACCENT_BRASS);
       doc.setLineWidth(0.35);
       doc.line(marginX, 32.5, pageW - marginX, 32.5);
 
-      gridTopY = 37.5;
+      gridTopY = 38;
     } else {
       // Compact Continuation Running Header
       doc.setFont('times', 'bold');
@@ -276,177 +318,242 @@ export async function exportPortfolioPdf(
 
     pageTakes.forEach((take, localIdx) => {
       const globalIdx = startTakeIndex + localIdx;
-      const prepared = preparedImages[globalIdx];
-      const col = localIdx % 2;
-      const row = Math.floor(localIdx / 2);
+      const { resultImg, sourceImg } = preparedPairs[globalIdx];
 
-      const x = marginX + col * (cardW + colGap);
-      const y = gridTopY + row * (cardH + rowGap);
+      const x = marginX;
+      const y = gridTopY + localIdx * (cardH + rowGap);
+      const cardW = contentW;
 
-      // Card container plate
+      // Plate container
       doc.setFillColor(...CARD_SURFACE);
       doc.setDrawColor(...BORDER_HAIRLINE);
       doc.setLineWidth(0.25);
-      doc.roundedRect(x, y, cardW, cardH, 2, 2, 'FD');
+      doc.roundedRect(x, y, cardW, cardH, 2.2, 2.2, 'FD');
 
-      const pad = 3.5;
-      const innerW = cardW - pad * 2;
+      const pad = 4.5;
+      const innerW = cardW - pad * 2; // 173mm
       const frameNum = String(take.frameNumber).padStart(2, '0');
       const timeStr = formatTakeTimestamp(take.createdAt);
 
-      // Card Top Metadata Strip (Take # + Format + Timestamp)
+      // Top Plate Header Strip
+      const headerBaselineY = y + 7.2;
       doc.setFont('courier', 'bold');
-      doc.setFontSize(7.5);
+      doc.setFontSize(8);
       doc.setTextColor(...ACCENT_BRASS);
-      doc.text(`TAKE ${frameNum}`, x + pad, y + 5.6);
+      const takeTag = `TAKE ${frameNum}`;
+      doc.text(takeTag, x + pad, headerBaselineY);
+
+      const takeTagW = doc.getTextWidth(takeTag);
+      doc.setFont('times', 'bold');
+      doc.setFontSize(11.5);
+      doc.setTextColor(...TEXT_IVORY);
+      const titleX = x + pad + takeTagW + 3.2;
+      const rightMetaStr = [
+        take.retouchPrompt ? 'RETOUCHED' : null,
+        take.aspectRatio,
+        timeStr || null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
 
       doc.setFont('courier', 'normal');
-      doc.setFontSize(7);
-      doc.setTextColor(...TEXT_MUTED);
-      const topRightMeta = [take.aspectRatio, timeStr].filter(Boolean).join(' · ');
-      doc.text(topRightMeta, x + cardW - pad, y + 5.6, { align: 'right' });
+      doc.setFontSize(7.2);
+      const rightMetaW = doc.getTextWidth(rightMetaStr);
 
-      // Portrait Image Well (preserving aspect ratio without distortion)
-      const imgBoxX = x + pad;
-      const imgBoxY = y + 7.8;
-      const imgBoxW = innerW;
-      const imgBoxH = Math.max(52, cardH - 55);
-
-      doc.setFillColor(...PHOTO_WELL);
-      doc.setDrawColor(34, 34, 40);
-      doc.setLineWidth(0.2);
-      doc.rect(imgBoxX, imgBoxY, imgBoxW, imgBoxH, 'FD');
-
-      const imgAspect = prepared.width / Math.max(1, prepared.height);
-      const boxAspect = imgBoxW / imgBoxH;
-      let drawW = imgBoxW;
-      let drawH = imgBoxH;
-      let drawX = imgBoxX;
-      let drawY = imgBoxY;
-
-      if (imgAspect > boxAspect) {
-        drawW = imgBoxW;
-        drawH = imgBoxW / imgAspect;
-        drawY = imgBoxY + (imgBoxH - drawH) / 2;
-      } else {
-        drawH = imgBoxH;
-        drawW = imgBoxH * imgAspect;
-        drawX = imgBoxX + (imgBoxW - drawW) / 2;
-      }
-
-      doc.addImage(prepared.dataUrl, 'JPEG', drawX, drawY, drawW, drawH, undefined, 'FAST');
-
-      // Style Heading & Retouch Indicator
-      let cursorY = imgBoxY + imgBoxH + 5.2;
       doc.setFont('times', 'bold');
-      doc.setFontSize(10.5);
-      doc.setTextColor(...TEXT_IVORY);
-      const titleMaxW = take.retouchPrompt ? innerW - 19 : innerW;
-      doc.text(truncateLine(doc, take.styleName, titleMaxW), x + pad, cursorY);
+      doc.setFontSize(11.5);
+      const maxStyleW = Math.max(40, innerW - takeTagW - rightMetaW - 10);
+      doc.text(`·  ${truncateLine(doc, take.styleName, maxStyleW)}`, titleX, headerBaselineY);
 
-      if (take.retouchPrompt) {
+      // Right-aligned format / timestamp / retouch tag
+      doc.setFont('courier', take.retouchPrompt ? 'bold' : 'normal');
+      doc.setFontSize(7.2);
+      doc.setTextColor(...(take.retouchPrompt ? ACCENT_BRASS : TEXT_MUTED));
+      doc.text(rightMetaStr, x + cardW - pad, headerBaselineY, { align: 'right' });
+
+      // Hairline under plate header
+      const ruleY = y + 10.2;
+      doc.setDrawColor(...BORDER_SUBTLE);
+      doc.setLineWidth(0.2);
+      doc.line(x + pad, ruleY, x + cardW - pad, ruleY);
+
+      // Main 2-Zone Body: Left Before/After Diptych (108mm) + Right Specifications Column (60mm)
+      const bodyTopY = ruleY + 3.2;
+      const bodyBottomY = y + cardH - pad;
+      const bodyH = bodyBottomY - bodyTopY;
+
+      const diptychW = 108;
+      const colDividerGap = 5;
+      const specX = x + pad + diptychW + colDividerGap;
+      const specW = innerW - diptychW - colDividerGap;
+
+      // Left Zone: Side-by-side Original vs. Studio Result comparison
+      const labelBandH = 4.2;
+      const imgBoxY = bodyTopY + labelBandH;
+      const imgBoxH = bodyH - labelBandH;
+
+      if (sourceImg) {
+        const wellGap = 3.5;
+        const wellW = (diptychW - wellGap) / 2;
+        const beforeX = x + pad;
+        const afterX = beforeX + wellW + wellGap;
+
+        // Micro labels directly above each plate well
+        doc.setFont('courier', 'normal');
+        doc.setFontSize(6.4);
+        doc.setTextColor(...TEXT_MUTED);
+        doc.text('BEFORE · ORIGINAL', beforeX, bodyTopY + 2.6);
+
         doc.setFont('courier', 'bold');
-        doc.setFontSize(6.5);
+        doc.setFontSize(6.4);
         doc.setTextColor(...ACCENT_BRASS);
-        doc.text('RETOUCHED', x + cardW - pad, cursorY - 0.3, { align: 'right' });
+        doc.text('AFTER · STUDIO', afterX, bodyTopY + 2.6);
+
+        // Before well (Original input selfie)
+        doc.setFillColor(...PHOTO_WELL);
+        doc.setDrawColor(...BORDER_SUBTLE);
+        doc.setLineWidth(0.22);
+        doc.rect(beforeX, imgBoxY, wellW, imgBoxH, 'FD');
+        drawContainedImage(doc, sourceImg, beforeX + 0.6, imgBoxY + 0.6, wellW - 1.2, imgBoxH - 1.2);
+
+        // After well (Generated studio portrait with refined brass accent border)
+        doc.setFillColor(...PHOTO_WELL);
+        doc.setDrawColor(...BORDER_BRASS_SOFT);
+        doc.setLineWidth(0.3);
+        doc.rect(afterX, imgBoxY, wellW, imgBoxH, 'FD');
+        drawContainedImage(doc, resultImg, afterX + 0.6, imgBoxY + 0.6, wellW - 1.2, imgBoxH - 1.2);
+      } else {
+        // Fallback single full-bay portrait when no source photo is attached
+        doc.setFont('courier', 'bold');
+        doc.setFontSize(6.4);
+        doc.setTextColor(...ACCENT_BRASS);
+        doc.text('STUDIO PORTRAIT', x + pad, bodyTopY + 2.6);
+
+        doc.setFillColor(...PHOTO_WELL);
+        doc.setDrawColor(...BORDER_BRASS_SOFT);
+        doc.setLineWidth(0.3);
+        doc.rect(x + pad, imgBoxY, diptychW, imgBoxH, 'FD');
+        drawContainedImage(doc, resultImg, x + pad + 0.6, imgBoxY + 0.6, diptychW - 1.2, imgBoxH - 1.2);
       }
 
-      // Subtle hairline below style heading
-      cursorY += 2.2;
-      doc.setDrawColor(38, 38, 44);
+      // Vertical hairline separating imagery from specification sheet
+      doc.setDrawColor(...BORDER_SUBTLE);
       doc.setLineWidth(0.2);
-      doc.line(x + pad, cursorY, x + cardW - pad, cursorY);
+      doc.line(specX - colDividerGap / 2, bodyTopY, specX - colDividerGap / 2, bodyBottomY);
 
-      // Styling & Generation Parameters
+      // Right Zone: Styling & Generation Specifications
+      let cursorY = bodyTopY + 2.6;
+      doc.setFont('courier', 'bold');
+      doc.setFontSize(6.5);
+      doc.setTextColor(...ACCENT_BRASS);
+      doc.text('STYLING & GENERATION SPECS', specX, cursorY);
+
       const recipe = take.recipe;
       const advancedPreset = getAdvancedLightingPresetById(recipe.advancedLightingPreset);
+      const subjectProfile = getSubjectProfileById(recipe.subjectProfile);
       const aperture = formatApertureFromBlur(recipe.backdropBlur);
-      const lightingSpec =
+      const lightingBase =
         advancedPreset.id !== 'none'
           ? `${take.lightingLabel} (${advancedPreset.label})`
           : take.lightingLabel;
+      const lightingSpec = `${lightingBase} · ${subjectProfile.label}`;
       const framingSpec = recipe.smartCrop
-        ? `${take.framingLabel} · Smart Crop`
-        : take.framingLabel;
+        ? `${take.framingLabel} · Smart Crop · ${recipe.zoomAdjust.toFixed(2)}x`
+        : `${take.framingLabel} · Zoom ${recipe.zoomAdjust.toFixed(2)}x`;
 
-      const labelColW = 16.5;
-      const valueX = x + pad + labelColW;
-      const valueMaxW = innerW - labelColW;
-
-      const rows: Array<{ label: string; value: string; mono?: boolean }> = [
+      const specs: Array<{ label: string; value: string; mono?: boolean }> = [
+        { label: 'WARDROBE', value: take.attireLabel },
+        { label: 'FRAMING', value: framingSpec },
+        { label: 'LIGHTING', value: lightingSpec },
         {
-          label: 'Wardrobe',
-          value: take.attireLabel,
-        },
-        {
-          label: 'Framing',
-          value: `${framingSpec} · Zoom ${recipe.zoomAdjust.toFixed(2)}x`,
-        },
-        {
-          label: 'Lighting',
-          value: lightingSpec,
-        },
-        {
-          label: 'Optics',
+          label: 'OPTICS',
           value: `DoF ${aperture} (${Math.round(recipe.backdropBlur)}px) · Key ${formatPct(
             recipe.keyLightStrength
           )} · Rim ${formatPct(recipe.rimLight)}`,
           mono: true,
         },
         {
-          label: 'Tone',
+          label: 'TONE',
           value: recipe.monochrome
             ? `Mono · Exp ${formatSigned(recipe.exposure)} · Ctr ${formatSigned(
                 recipe.contrast
-              )} · Grain ${formatPct(recipe.grain)}`
+              )}`
             : `Exp ${formatSigned(recipe.exposure)} · Ctr ${formatSigned(
                 recipe.contrast
-              )} · Warm ${formatSigned(recipe.warmth)} · Sat ${formatSigned(recipe.saturation)}`,
+              )} · Warm ${formatSigned(recipe.warmth)}`,
           mono: true,
         },
         {
-          label: 'Finish',
-          value: `Vig ${formatPct(recipe.vignette)} · Grain ${formatPct(
-            recipe.grain
+          label: 'FINISH',
+          value: `Sat ${formatSigned(recipe.saturation)} · Vig ${formatPct(
+            recipe.vignette
           )} · Sharp ${formatPct(recipe.sharpen ?? 0)}`,
           mono: true,
         },
       ];
 
-      cursorY += 3.8;
-      const lineStep = 4.1;
-
-      for (const spec of rows) {
+      cursorY += 5;
+      for (const spec of specs) {
         doc.setFont('helvetica', 'bold');
-        doc.setFontSize(6.6);
+        doc.setFontSize(5.9);
         doc.setTextColor(...TEXT_DIM);
-        doc.text(spec.label, x + pad, cursorY);
+        doc.text(spec.label, specX, cursorY);
 
+        cursorY += 3.2;
         doc.setFont(spec.mono ? 'courier' : 'helvetica', 'normal');
-        doc.setFontSize(spec.mono ? 6.4 : 6.9);
+        doc.setFontSize(spec.mono ? 6.5 : 7.2);
         doc.setTextColor(...TEXT_IVORY);
-        doc.text(truncateLine(doc, spec.value, valueMaxW), valueX, cursorY);
-        cursorY += lineStep;
+        doc.text(truncateLine(doc, spec.value, specW), specX, cursorY);
+
+        cursorY += 5.1;
       }
 
-      // Retouch prompt or director note caption at bottom of plate
-      const noteText = take.retouchPrompt
-        ? `Retouch: "${take.retouchPrompt}"`
-        : take.directorNote
-          ? `Note: ${take.directorNote}`
-          : `Anchor: Face X ${formatPct(take.anchor.faceCenterX)} · Eye Y ${formatPct(
-              take.anchor.faceCenterY
-            )} · Scale ${formatPct(take.anchor.faceHeightRatio)}`;
-
-      const bottomCapY = y + cardH - 3.6;
-      doc.setDrawColor(34, 34, 40);
+      // Bottom Notes Block (Retouch instruction / Director note / Facial anchor)
+      const notesDividerY = Math.min(bodyBottomY - 19, cursorY - 0.8);
+      doc.setDrawColor(...BORDER_SUBTLE);
       doc.setLineWidth(0.18);
-      doc.line(x + pad, bottomCapY - 3.6, x + cardW - pad, bottomCapY - 3.6);
+      doc.line(specX, notesDividerY, specX + specW, notesDividerY);
 
-      doc.setFont('helvetica', 'italic');
-      doc.setFontSize(6.5);
-      doc.setTextColor(...(take.retouchPrompt ? ACCENT_BRASS : TEXT_MUTED));
-      doc.text(truncateLine(doc, noteText, innerW), x + pad, bottomCapY);
+      let noteCursorY = notesDividerY + 4;
+      if (take.retouchPrompt) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(5.9);
+        doc.setTextColor(...ACCENT_BRASS);
+        doc.text('RETOUCH DIRECTION', specX, noteCursorY);
+        noteCursorY += 3.2;
+
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.7);
+        doc.setTextColor(...TEXT_IVORY);
+        const lines = (doc.splitTextToSize(`"${take.retouchPrompt}"`, specW) as string[]).slice(
+          0,
+          3
+        );
+        doc.text(lines, specX, noteCursorY);
+        noteCursorY += lines.length * 3.1 + 1.5;
+      } else if (take.directorNote) {
+        doc.setFont('helvetica', 'bold');
+        doc.setFontSize(5.9);
+        doc.setTextColor(...TEXT_DIM);
+        doc.text('DARKROOM NOTE', specX, noteCursorY);
+        noteCursorY += 3.2;
+
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(6.6);
+        doc.setTextColor(...TEXT_MUTED);
+        const lines = (doc.splitTextToSize(take.directorNote, specW) as string[]).slice(0, 3);
+        doc.text(lines, specX, noteCursorY);
+        noteCursorY += lines.length * 3.1 + 1.5;
+      }
+
+      // Quiet Anchor Spec at the bottom of the spec column
+      doc.setFont('courier', 'normal');
+      doc.setFontSize(6);
+      doc.setTextColor(...TEXT_DIM);
+      const anchorLine = `ANCHOR X ${formatPct(take.anchor.faceCenterX)} · EYE Y ${formatPct(
+        take.anchor.faceCenterY
+      )} · SCALE ${formatPct(take.anchor.faceHeightRatio)}`;
+      doc.text(truncateLine(doc, anchorLine, specW), specX, bodyBottomY - 0.6);
     });
 
     // Running Footer
@@ -457,7 +564,11 @@ export async function exportPortfolioPdf(
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(7.2);
     doc.setTextColor(...TEXT_MUTED);
-    doc.text('Sable Studio · Editorial Darkroom Headshot Portfolio', marginX, footerY + 1);
+    doc.text(
+      'Sable Studio · Editorial Darkroom Before & After Headshot Portfolio',
+      marginX,
+      footerY + 1
+    );
 
     doc.setFont('courier', 'normal');
     doc.setFontSize(7.2);
