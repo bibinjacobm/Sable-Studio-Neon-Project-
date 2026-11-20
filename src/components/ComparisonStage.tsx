@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Compass,
   Download,
   Expand,
   History,
@@ -22,12 +23,13 @@ import {
 } from '../data/studioCatalog';
 import {
   analyzeLightingQuality,
+  evaluateLightingCompassAlignment,
   generateLightingHeatmap,
   type LightingHeatmapAnalysis,
   type LightingQualityReport,
 } from '../utils/lightingHeatmap';
-
-export type CompareViewMode = 'split' | 'after' | 'before';
+import { LightingCompassOverlay } from './LightingCompassOverlay';
+import { LightingHistogram } from './LightingHistogram';
 
 interface ComparisonStageProps {
   sourcePortrait: SourcePortrait | null;
@@ -37,7 +39,6 @@ interface ComparisonStageProps {
   detectedAnchor: FramingAnchor | null;
   currentLightingId: LightingId;
   currentAdvancedLightingPreset: AdvancedLightingPresetId;
-  compareMode: CompareViewMode;
   sliderPosition: number;
   isGenerating: boolean;
   generationPhase: string;
@@ -45,7 +46,6 @@ interface ComparisonStageProps {
   elapsedSeconds: number;
   takesCount: number;
   isHistoryOpen: boolean;
-  onCompareModeChange: (mode: CompareViewMode) => void;
   onSliderChange: (position: number) => void;
   onToggleHistory: () => void;
   onFileSelected: (file: File) => void;
@@ -67,7 +67,6 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   detectedAnchor,
   currentLightingId,
   currentAdvancedLightingPreset,
-  compareMode,
   sliderPosition,
   isGenerating,
   generationPhase,
@@ -75,7 +74,6 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   elapsedSeconds,
   takesCount,
   isHistoryOpen,
-  onCompareModeChange,
   onSliderChange,
   onToggleHistory,
   onFileSelected,
@@ -86,7 +84,9 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   onDownload,
 }) => {
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [isDraggingSlider, setIsDraggingSlider] = useState(false);
   const [showHeatmap, setShowHeatmap] = useState(false);
+  const [showCompass, setShowCompass] = useState(true);
   const [heatmapAnalysis, setHeatmapAnalysis] = useState<LightingHeatmapAnalysis | null>(null);
   const [lightingQuality, setLightingQuality] = useState<LightingQualityReport | null>(null);
   const [isAnalyzingQuality, setIsAnalyzingQuality] = useState(false);
@@ -146,10 +146,20 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
     ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
     : sourcePortrait?.dataUrl ?? null;
 
+  const canCompare = Boolean(activeTake && activeTake.sourceImageUrl);
   const isBeforeViewVisible = Boolean(
-    beforeSourceUrl && (!activeTake || compareMode === 'before' || compareMode === 'split')
+    beforeSourceUrl && (!activeTake || sliderPosition > 0.5)
   );
   const isHeatmapActive = showHeatmap && isBeforeViewVisible;
+
+  const compassAlignment = useMemo(() => {
+    if (!lightingQuality) return null;
+    const targetLighting = activeTake ? activeTake.recipe.lightingId : currentLightingId;
+    const targetAdvanced = activeTake
+      ? activeTake.recipe.advancedLightingPreset ?? 'none'
+      : currentAdvancedLightingPreset;
+    return evaluateLightingCompassAlignment(lightingQuality, targetLighting, targetAdvanced);
+  }, [lightingQuality, activeTake, currentLightingId, currentAdvancedLightingPreset]);
 
   useEffect(() => {
     if (!inputSelfieUrl) {
@@ -210,8 +220,8 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
 
   const handleToggleHeatmap = () => {
     if (!beforeSourceUrl) return;
-    if (activeTake && compareMode === 'after') {
-      onCompareModeChange('before');
+    if (activeTake && sliderPosition < 25) {
+      onSliderChange(60);
       setShowHeatmap(true);
       return;
     }
@@ -231,33 +241,41 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   );
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (compareMode !== 'split') return;
+    if (!canCompare) return;
     isPointerDownRef.current = true;
+    setIsDraggingSlider(true);
     e.currentTarget.setPointerCapture(e.pointerId);
     updateSliderFromClientX(e.clientX);
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!isPointerDownRef.current || compareMode !== 'split') return;
+    if (!isPointerDownRef.current || !canCompare) return;
     updateSliderFromClientX(e.clientX);
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isPointerDownRef.current) return;
     isPointerDownRef.current = false;
+    setIsDraggingSlider(false);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) {
       e.currentTarget.releasePointerCapture(e.pointerId);
     }
   };
 
+  const handleDoubleClickSlider = () => {
+    if (!canCompare) return;
+    onSliderChange(sliderPosition > 5 && sliderPosition < 95 ? 0 : 50);
+  };
+
   const handleSliderKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (compareMode !== 'split') return;
+    if (!canCompare) return;
+    const step = e.shiftKey ? 1 : 5;
     if (e.key === 'ArrowLeft') {
       e.preventDefault();
-      onSliderChange(Math.max(0, sliderPosition - 5));
+      onSliderChange(Math.max(0, sliderPosition - step));
     } else if (e.key === 'ArrowRight') {
       e.preventDefault();
-      onSliderChange(Math.min(100, sliderPosition + 5));
+      onSliderChange(Math.min(100, sliderPosition + step));
     } else if (e.key === 'Home') {
       e.preventDefault();
       onSliderChange(0);
@@ -276,7 +294,8 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
     }
   };
 
-  const canCompare = Boolean(activeTake && activeTake.sourceImageUrl);
+  const roundedBeforePct = Math.round(sliderPosition);
+  const roundedAfterPct = 100 - roundedBeforePct;
 
   const aspectClass =
     activeTake?.aspectRatio === '1:1'
@@ -340,34 +359,19 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 }
               }}
             >
-              <div
-                role="group"
-                aria-label="Before and After comparison view mode"
+              <button
+                type="button"
+                onClick={handleDoubleClickSlider}
                 aria-describedby={isCompareTooltipOpen ? 'compare-toggle-tooltip' : undefined}
-                className="inline-flex items-center rounded-md border border-white/[0.08] bg-[#141416] p-0.5"
+                aria-label={`Swipe comparison divider at ${roundedBeforePct}% original and ${roundedAfterPct}% studio portrait. Click to snap`}
+                className="inline-flex min-h-[34px] items-center gap-2 rounded-md border border-[#D4A853]/35 bg-[#141416] px-3 py-1.5 text-xs font-medium text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
               >
-                {(
-                  [
-                    { id: 'after', label: 'Final Portrait' },
-                    { id: 'split', label: 'Split Compare' },
-                    { id: 'before', label: 'Original' },
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    type="button"
-                    onClick={() => onCompareModeChange(tab.id)}
-                    aria-pressed={compareMode === tab.id}
-                    className={`rounded-[5px] px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
-                      compareMode === tab.id
-                        ? 'bg-[#26262B] text-[#F5F1E8]'
-                        : 'text-[#9B968C] hover:text-[#F5F1E8]'
-                    }`}
-                  >
-                    {tab.label}
-                  </button>
-                ))}
-              </div>
+                <MoveHorizontal className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                <span>Swipe</span>
+                <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
+                  {roundedBeforePct}/{roundedAfterPct}
+                </span>
+              </button>
 
               {/* Floating Interactive Tooltip with seamless hover bridge */}
               {isCompareTooltipOpen && (
@@ -385,7 +389,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                     />
                     <div className="flex items-start justify-between gap-2">
                       <p className="text-xs font-semibold text-[#F5F1E8]">
-                        Before / After Verification
+                        Before / After Swipe Verification
                       </p>
                       <button
                         type="button"
@@ -397,30 +401,37 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                       </button>
                     </div>
                     <p className="mt-1.5 text-xs leading-relaxed text-[#9B968C]">
-                      Allows side-by-side verification of studio-grade lighting, backdrop, and
-                      retouching enhancements directly against your original input selfie.
+                      Drag the brass overlay divider directly across the portrait for side-by-side
+                      verification of studio-grade enhancements against your original input selfie.
                     </p>
                     <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] pt-2.5 text-[11px]">
-                      <div className="flex items-center gap-2.5">
+                      <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => {
-                            onCompareModeChange('split');
-                            onSliderChange(50);
-                          }}
+                          onClick={() => onSliderChange(50)}
                           className="font-medium text-[#D4A853] underline decoration-[#D4A853]/50 underline-offset-4 transition-colors hover:text-[#F5F1E8] whitespace-nowrap cursor-pointer"
                         >
-                          Split 50/50
+                          Center 50/50
                         </button>
                         <span aria-hidden="true" className="text-[#9B968C]">
                           ·
                         </span>
                         <button
                           type="button"
-                          onClick={() => onCompareModeChange('before')}
+                          onClick={() => onSliderChange(0)}
                           className="font-medium text-[#F5F1E8]/85 transition-colors hover:text-[#D4A853] whitespace-nowrap cursor-pointer"
                         >
-                          View Original
+                          Full Studio
+                        </button>
+                        <span aria-hidden="true" className="text-[#9B968C]">
+                          ·
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onSliderChange(100)}
+                          className="font-medium text-[#F5F1E8]/85 transition-colors hover:text-[#D4A853] whitespace-nowrap cursor-pointer"
+                        >
+                          Original
                         </button>
                       </div>
                       <span className="font-mono tabular-nums text-[#9B968C] whitespace-nowrap">
@@ -434,23 +445,45 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
           )}
 
           {beforeSourceUrl && (
-            <button
-              type="button"
-              onClick={handleToggleHeatmap}
-              aria-pressed={isHeatmapActive}
-              title="Toggle lighting intensity & shadow distribution heat-map on Before view"
-              className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
-                isHeatmapActive
-                  ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
-                  : 'border-white/[0.09] bg-[#141416] text-[#9B968C] hover:border-white/25 hover:text-[#F5F1E8]'
-              }`}
-            >
-              <SunMedium
-                className={`h-3.5 w-3.5 shrink-0 ${isHeatmapActive ? 'text-[#D4A853]' : ''}`}
-                aria-hidden="true"
-              />
-              <span>Light Map</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={handleToggleHeatmap}
+                aria-pressed={isHeatmapActive}
+                title="Toggle lighting intensity & shadow distribution heat-map on Before view"
+                className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                  isHeatmapActive
+                    ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                    : 'border-white/[0.09] bg-[#141416] text-[#9B968C] hover:border-white/25 hover:text-[#F5F1E8]'
+                }`}
+              >
+                <SunMedium
+                  className={`h-3.5 w-3.5 shrink-0 ${isHeatmapActive ? 'text-[#D4A853]' : ''}`}
+                  aria-hidden="true"
+                />
+                <span>Light Map</span>
+              </button>
+
+              {compassAlignment && (
+                <button
+                  type="button"
+                  onClick={() => setShowCompass((prev) => !prev)}
+                  aria-pressed={showCompass}
+                  title="Toggle Lighting Direction Compass overlay"
+                  className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                    showCompass
+                      ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                      : 'border-white/[0.09] bg-[#141416] text-[#9B968C] hover:border-white/25 hover:text-[#F5F1E8]'
+                  }`}
+                >
+                  <Compass
+                    className={`h-3.5 w-3.5 shrink-0 ${showCompass ? 'text-[#D4A853]' : ''}`}
+                    aria-hidden="true"
+                  />
+                  <span>Compass</span>
+                </button>
+              )}
+            </>
           )}
 
           {takesCount > 0 && (
@@ -535,87 +568,42 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
             onPointerCancel={handlePointerUp}
+            onDoubleClick={handleDoubleClickSlider}
             onKeyDown={handleSliderKeyDown}
-            tabIndex={canCompare && compareMode === 'split' ? 0 : undefined}
-            role={canCompare && compareMode === 'split' ? 'slider' : undefined}
+            tabIndex={canCompare ? 0 : undefined}
+            role={canCompare ? 'slider' : undefined}
             aria-label={
-              canCompare && compareMode === 'split'
-                ? 'Before and after headshot comparison slider'
+              canCompare
+                ? 'Draggable before and after portrait comparison overlay slider'
                 : undefined
             }
-            aria-valuemin={canCompare && compareMode === 'split' ? 0 : undefined}
-            aria-valuemax={canCompare && compareMode === 'split' ? 100 : undefined}
-            aria-valuenow={
-              canCompare && compareMode === 'split' ? Math.round(sliderPosition) : undefined
+            aria-valuemin={canCompare ? 0 : undefined}
+            aria-valuemax={canCompare ? 100 : undefined}
+            aria-valuenow={canCompare ? roundedBeforePct : undefined}
+            aria-valuetext={
+              canCompare
+                ? `${roundedBeforePct}% original selfie, ${roundedAfterPct}% generated studio portrait`
+                : undefined
             }
-            className={`relative w-full ${aspectClass} select-none overflow-hidden rounded-lg bg-[#0B0B0C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] ${
-              canCompare && compareMode === 'split' ? 'cursor-ew-resize touch-none' : ''
+            className={`group/swipe relative w-full ${aspectClass} select-none overflow-hidden rounded-lg bg-[#0B0B0C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] ${
+              canCompare
+                ? isDraggingSlider
+                  ? 'cursor-grabbing touch-none'
+                  : 'cursor-ew-resize touch-none'
+                : ''
             }`}
           >
-            {/* Base layer: Generated studio portrait (or pixel-aligned original when 'before' mode) */}
+            {/* Base layer: Generated studio portrait */}
             <img
-              src={
-                compareMode === 'before'
-                  ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
-                  : activeTake.imageUrl
-              }
+              src={activeTake.imageUrl}
               alt={`${activeTake.styleName} studio headshot frame ${activeTake.frameNumber}`}
               referrerPolicy="no-referrer"
               draggable={false}
               className="h-full w-full object-cover"
             />
 
-            {/* False-color lighting intensity & shadow distribution overlay in full 'Before' view */}
-            {compareMode === 'before' && showHeatmap && heatmapAnalysis && (
-              <>
-                <img
-                  src={heatmapAnalysis.overlayDataUrl}
-                  alt="False-color lighting intensity and shadow distribution heat-map overlay"
-                  draggable={false}
-                  className="pointer-events-none absolute inset-0 h-full w-full object-cover"
-                />
-                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/45 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
-                  <span>Before · Light Intensity Map</span>
-                  <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
-                    {heatmapAnalysis.contrastLabel} · Key{' '}
-                    {heatmapAnalysis.keyBias === 'balanced'
-                      ? 'Even'
-                      : heatmapAnalysis.keyBias === 'left'
-                        ? 'Left'
-                        : 'Right'}
-                  </span>
-                </div>
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/75 to-transparent px-4 pt-10 pb-3.5">
-                  <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-[#F5F1E8]/90">
-                    <span>Shadow</span>
-                    <span className="font-mono tabular-nums text-[#9B968C]">
-                      S {heatmapAnalysis.shadowPercent}% · M {heatmapAnalysis.midtonePercent}% · H{' '}
-                      {heatmapAnalysis.highlightPercent}%
-                    </span>
-                    <span>Peak</span>
-                  </div>
-                  <div
-                    aria-hidden="true"
-                    className="h-1.5 w-full rounded-full bg-[linear-gradient(to_right,#182260_0%,#284EA8_20%,#2E90A6_40%,#4EA67C_58%,#D4A853_76%,#E87236_90%,#E03A3A_100%)]"
-                  />
-                  <p className="mt-2 text-[11px] leading-relaxed text-[#F5F1E8]/90">
-                    {critique ? (
-                      <>
-                        <span className="font-semibold text-[#D4A853]">
-                          Suggested · {getStyleById(critique.recommendedStyleId).shortName}:
-                        </span>{' '}
-                        {critique.lightingAssessment}
-                      </>
-                    ) : (
-                      heatmapAnalysis.exposureSummary
-                    )}
-                  </p>
-                </div>
-              </>
-            )}
-
-            {/* Clipped overlay layer: Pixel-aligned Original Selfie on left side ONLY in Split Compare mode */}
-            {canCompare && compareMode === 'split' && (
+            {/* Dynamic Draggable Overlay Layer: Pixel-Aligned Original Selfie (+ optional Light Map) */}
+            {canCompare && (
               <>
                 <div
                   className="pointer-events-none absolute inset-0 overflow-hidden"
@@ -638,38 +626,89 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                   )}
                 </div>
 
-                {/* Brass Vertical Curtain Line & Tactile Handle */}
+                {/* Dynamic Brass Curtain Line & Tactile Draggable Handle */}
                 <div
-                  className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-[#D4A853] shadow-[0_0_12px_rgba(0,0,0,0.8)]"
+                  className="pointer-events-none absolute inset-y-0 z-10 w-0.5 bg-[#D4A853] shadow-[0_0_14px_rgba(0,0,0,0.85)]"
                   style={{ left: `${sliderPosition}%` }}
                 >
-                  <div className="absolute top-1/2 left-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#D4A853] bg-[#0B0B0C]/95 text-[#F5F1E8] shadow-lg">
+                  <div
+                    className={`absolute top-1/2 left-1/2 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-[#D4A853] bg-[#0B0B0C]/95 text-[#F5F1E8] shadow-[0_6px_22px_rgba(0,0,0,0.75)] transition-transform duration-150 motion-reduce:transition-none ${
+                      isDraggingSlider
+                        ? 'scale-110 ring-4 ring-[#D4A853]/25'
+                        : 'group-hover/swipe:scale-105'
+                    }`}
+                  >
                     <MoveHorizontal className="h-4 w-4 text-[#D4A853]" aria-hidden="true" />
                   </div>
                 </div>
 
-                {/* Top Corner Labels */}
-                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/75 via-black/30 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
-                  <span>{showHeatmap ? 'Before · Light Map' : 'Before · Original'}</span>
-                  <span>After · Studio</span>
+                {/* Top Corner Labels with adaptive opacity near frame edges */}
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/35 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
+                  <span
+                    className={`transition-opacity duration-150 ${
+                      sliderPosition <= 10 ? 'opacity-0' : 'opacity-100'
+                    }`}
+                  >
+                    {showHeatmap ? 'Before · Light Map' : 'Before · Original'}
+                  </span>
+                  <span
+                    className={`transition-opacity duration-150 ${
+                      sliderPosition >= 90 ? 'opacity-0' : 'opacity-100'
+                    }`}
+                  >
+                    After · Studio
+                  </span>
                 </div>
 
-                {/* Bottom Scrim Drag Indicator */}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/80 via-black/35 to-transparent px-4 pt-8 pb-3 text-xs text-[#F5F1E8]/90">
-                  <span>
-                    {showHeatmap && heatmapAnalysis ? (
-                      <span className="font-mono text-[11px] tabular-nums">
+                {/* Lighting Direction Compass Overlay */}
+                {showCompass && compassAlignment && (
+                  <LightingCompassOverlay alignment={compassAlignment} />
+                )}
+
+                {/* Bottom Scrim: Heat-map ramp when Light Map active, otherwise live swipe readout */}
+                {showHeatmap && heatmapAnalysis && sliderPosition >= 15 ? (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/75 to-transparent px-4 pt-10 pb-3.5">
+                    <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-[#F5F1E8]/90">
+                      <span>Shadow</span>
+                      <span className="font-mono tabular-nums text-[#9B968C]">
                         S {heatmapAnalysis.shadowPercent}% · M {heatmapAnalysis.midtonePercent}% · H{' '}
                         {heatmapAnalysis.highlightPercent}%
                       </span>
-                    ) : (
-                      'Drag divider to compare'
-                    )}
-                  </span>
-                  <span className="font-mono tabular-nums text-[#D4A853]">
-                    {Math.round(sliderPosition)}% / {100 - Math.round(sliderPosition)}%
-                  </span>
-                </div>
+                      <span className="font-mono tabular-nums text-[#D4A853]">
+                        {roundedBeforePct}% / {roundedAfterPct}%
+                      </span>
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      className="h-1.5 w-full rounded-full bg-[linear-gradient(to_right,#182260_0%,#284EA8_20%,#2E90A6_40%,#4EA67C_58%,#D4A853_76%,#E87236_90%,#E03A3A_100%)]"
+                    />
+                    <p className="mt-2 text-[11px] leading-relaxed text-[#F5F1E8]/90">
+                      {critique ? (
+                        <>
+                          <span className="font-semibold text-[#D4A853]">
+                            Suggested · {getStyleById(critique.recommendedStyleId).shortName}:
+                          </span>{' '}
+                          {critique.lightingAssessment}
+                        </>
+                      ) : (
+                        heatmapAnalysis.exposureSummary
+                      )}
+                    </p>
+                  </div>
+                ) : (
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-gradient-to-t from-black/82 via-black/35 to-transparent px-4 pt-8 pb-3 text-xs text-[#F5F1E8]/90">
+                    <span>
+                      {roundedBeforePct === 0
+                        ? 'Full Studio Portrait · Drag right to reveal original'
+                        : roundedBeforePct === 100
+                          ? 'Full Original Selfie · Drag left to reveal studio'
+                          : 'Swipe divider to compare · Double-click to snap'}
+                    </span>
+                    <span className="font-mono tabular-nums text-[#D4A853] whitespace-nowrap shrink-0">
+                      {roundedBeforePct}% / {roundedAfterPct}%
+                    </span>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -682,6 +721,9 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"
               />
+              {showCompass && compassAlignment && (
+                <LightingCompassOverlay alignment={compassAlignment} />
+              )}
               {showHeatmap && heatmapAnalysis ? (
                 <>
                   <img
@@ -807,7 +849,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
         )}
       </div>
 
-      {/* Input Selfie Lighting Quality Meter (Dynamic Range & Shadow Harshness) */}
+      {/* Input Selfie Lighting Quality Meter & Real-Time Luminance Distribution Histogram */}
       {(lightingQuality || isAnalyzingQuality) && (
         <div
           aria-label={
@@ -818,162 +860,175 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
           className="mt-3 rounded-lg border border-white/[0.08] bg-[#141416] px-4 py-3.5"
         >
           {lightingQuality ? (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-                <div className="flex flex-wrap items-center gap-2.5 text-xs">
-                  <span className="font-semibold text-[#F5F1E8] whitespace-nowrap">
-                    Lighting Quality
-                  </span>
-                  <span aria-hidden="true" className="inline-flex items-center gap-1">
-                    {[1, 2, 3].map((level) => {
-                      const activeLevel =
-                        lightingQuality.rating === 'High'
-                          ? 3
-                          : lightingQuality.rating === 'Med'
-                            ? 2
-                            : 1;
-                      const isLit = level <= activeLevel;
-                      const litColor =
-                        lightingQuality.rating === 'High'
-                          ? 'bg-[#6CC091]'
-                          : lightingQuality.rating === 'Med'
-                            ? 'bg-[#D4A853]'
-                            : 'bg-[#E07A5F]';
-                      return (
-                        <span
-                          key={level}
-                          className={`h-1.5 w-3.5 rounded-[1px] ${
-                            isLit ? litColor : 'bg-white/[0.12]'
-                          }`}
-                        />
-                      );
-                    })}
-                  </span>
-                  <span
-                    className={`font-mono text-xs font-semibold tabular-nums whitespace-nowrap ${
-                      lightingQuality.rating === 'High'
-                        ? 'text-[#6CC091]'
-                        : lightingQuality.rating === 'Med'
-                          ? 'text-[#D4A853]'
-                          : 'text-[#E07A5F]'
-                    }`}
-                  >
-                    {lightingQuality.rating}
-                  </span>
-                  <span aria-hidden="true" className="text-[#9B968C]">
-                    ·
-                  </span>
-                  <span className="text-[#9B968C] whitespace-nowrap">
-                    {lightingQuality.correctionLevel}
-                  </span>
-                </div>
-
-                <div className="flex flex-wrap items-center gap-2.5 text-xs text-[#9B968C]">
-                  {(() => {
-                    const isRecommendedApplied =
-                      currentLightingId === lightingQuality.recommendedLightingId &&
-                      currentAdvancedLightingPreset === lightingQuality.recommendedAdvancedPreset;
-                    return isRecommendedApplied ? (
-                      <span className="text-[#6CC091] whitespace-nowrap">
-                        Active · {lightingQuality.recommendedPresetLabel}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-12 md:items-stretch md:gap-5">
+              {/* Left Column: Lighting Quality Rating, Sub-Meters & Actionable Guidance */}
+              <div className="flex flex-col justify-between md:col-span-7">
+                <div>
+                  <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
+                      <span className="font-semibold text-[#F5F1E8] whitespace-nowrap">
+                        Lighting Quality
                       </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onApplyRecommendedLighting(
-                            lightingQuality.recommendedLightingId,
-                            lightingQuality.recommendedAdvancedPreset
-                          )
-                        }
-                        disabled={isGenerating}
-                        className="font-medium text-[#D4A853] underline decoration-[#D4A853]/55 underline-offset-4 transition-colors hover:text-[#F5F1E8] disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                      <span aria-hidden="true" className="inline-flex items-center gap-1">
+                        {[1, 2, 3].map((level) => {
+                          const activeLevel =
+                            lightingQuality.rating === 'High'
+                              ? 3
+                              : lightingQuality.rating === 'Med'
+                                ? 2
+                                : 1;
+                          const isLit = level <= activeLevel;
+                          const litColor =
+                            lightingQuality.rating === 'High'
+                              ? 'bg-[#6CC091]'
+                              : lightingQuality.rating === 'Med'
+                                ? 'bg-[#D4A853]'
+                                : 'bg-[#E07A5F]';
+                          return (
+                            <span
+                              key={level}
+                              className={`h-1.5 w-3 rounded-[1px] ${
+                                isLit ? litColor : 'bg-white/[0.12]'
+                              }`}
+                            />
+                          );
+                        })}
+                      </span>
+                      <span
+                        className={`font-mono text-xs font-semibold tabular-nums whitespace-nowrap ${
+                          lightingQuality.rating === 'High'
+                            ? 'text-[#6CC091]'
+                            : lightingQuality.rating === 'Med'
+                              ? 'text-[#D4A853]'
+                              : 'text-[#E07A5F]'
+                        }`}
                       >
-                        Apply {lightingQuality.recommendedPresetLabel}
-                      </button>
-                    );
-                  })()}
-                  {beforeSourceUrl && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <button
-                        type="button"
-                        onClick={handleToggleHeatmap}
-                        className="font-medium text-[#F5F1E8] underline decoration-white/30 underline-offset-4 transition-colors hover:text-[#D4A853] hover:decoration-[#D4A853]/60 whitespace-nowrap cursor-pointer"
-                      >
-                        {isHeatmapActive ? 'Hide Light Map' : 'Inspect Light Map'}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
+                        {lightingQuality.rating}
+                      </span>
+                      <span aria-hidden="true" className="text-[#9B968C]">
+                        ·
+                      </span>
+                      <span className="text-[#9B968C] whitespace-nowrap">
+                        {lightingQuality.correctionLevel}
+                      </span>
+                    </div>
 
-              {/* Dynamic Range & Shadow Harshness Photometric Sub-Meters */}
-              <div className="mt-3 grid grid-cols-1 gap-3 border-t border-white/[0.06] pt-2.5 sm:grid-cols-2 sm:gap-5">
-                <div>
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-[#9B968C]">Dynamic Range</span>
-                    <span className="font-mono tabular-nums text-[#F5F1E8]">
-                      {lightingQuality.dynamicRangeLabel} · {lightingQuality.dynamicRangeScore}%
-                      {lightingQuality.clippedPercent >= 2 && (
-                        <span className="text-[#9B968C]">
-                          {' '}
-                          · {lightingQuality.clippedPercent}% clip
-                        </span>
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-[#9B968C]">
+                      {(() => {
+                        const isRecommendedApplied =
+                          currentLightingId === lightingQuality.recommendedLightingId &&
+                          currentAdvancedLightingPreset ===
+                            lightingQuality.recommendedAdvancedPreset;
+                        return isRecommendedApplied ? (
+                          <span className="text-[#6CC091] whitespace-nowrap">
+                            Active · {lightingQuality.recommendedPresetLabel}
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onApplyRecommendedLighting(
+                                lightingQuality.recommendedLightingId,
+                                lightingQuality.recommendedAdvancedPreset
+                              )
+                            }
+                            disabled={isGenerating}
+                            className="font-medium text-[#D4A853] underline decoration-[#D4A853]/55 underline-offset-4 transition-colors hover:text-[#F5F1E8] disabled:opacity-50 whitespace-nowrap cursor-pointer"
+                          >
+                            Apply {lightingQuality.recommendedPresetLabel}
+                          </button>
+                        );
+                      })()}
+                      {beforeSourceUrl && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <button
+                            type="button"
+                            onClick={handleToggleHeatmap}
+                            className="font-medium text-[#F5F1E8] underline decoration-white/30 underline-offset-4 transition-colors hover:text-[#D4A853] hover:decoration-[#D4A853]/60 whitespace-nowrap cursor-pointer"
+                          >
+                            {isHeatmapActive ? 'Hide Light Map' : 'Light Map'}
+                          </button>
+                        </>
                       )}
-                    </span>
+                    </div>
                   </div>
-                  <div
-                    aria-hidden="true"
-                    className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
-                  >
-                    <div
-                      className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
-                        lightingQuality.dynamicRangeScore >= 72
-                          ? 'bg-[#6CC091]'
-                          : lightingQuality.dynamicRangeScore >= 50
-                            ? 'bg-[#D4A853]'
-                            : 'bg-[#E07A5F]'
-                      }`}
-                      style={{ transform: `scaleX(${lightingQuality.dynamicRangeScore / 100})` }}
-                    />
+
+                  {/* Dynamic Range & Shadow Harshness Photometric Sub-Meters */}
+                  <div className="mt-3 grid grid-cols-1 gap-3 border-t border-white/[0.06] pt-2.5 sm:grid-cols-2 sm:gap-4">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-[#9B968C]">Dynamic Range</span>
+                        <span className="font-mono tabular-nums text-[#F5F1E8]">
+                          {lightingQuality.dynamicRangeLabel} · {lightingQuality.dynamicRangeScore}%
+                          {lightingQuality.clippedPercent >= 2 && (
+                            <span className="text-[#9B968C]">
+                              {' '}
+                              · {lightingQuality.clippedPercent}% clip
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div
+                        aria-hidden="true"
+                        className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                      >
+                        <div
+                          className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                            lightingQuality.dynamicRangeScore >= 72
+                              ? 'bg-[#6CC091]'
+                              : lightingQuality.dynamicRangeScore >= 50
+                                ? 'bg-[#D4A853]'
+                                : 'bg-[#E07A5F]'
+                          }`}
+                          style={{ transform: `scaleX(${lightingQuality.dynamicRangeScore / 100})` }}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between gap-2 text-[11px]">
+                        <span className="text-[#9B968C]">Shadow Harshness</span>
+                        <span className="font-mono tabular-nums text-[#F5F1E8]">
+                          {lightingQuality.shadowHarshnessLabel} ·{' '}
+                          {lightingQuality.shadowHarshnessScore}%
+                        </span>
+                      </div>
+                      <div
+                        aria-hidden="true"
+                        className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
+                      >
+                        <div
+                          className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                            lightingQuality.shadowHarshnessLabel === 'Soft'
+                              ? 'bg-[#6CC091]'
+                              : lightingQuality.shadowHarshnessLabel === 'Moderate'
+                                ? 'bg-[#D4A853]'
+                                : 'bg-[#E07A5F]'
+                          }`}
+                          style={{
+                            transform: `scaleX(${lightingQuality.shadowHarshnessScore / 100})`,
+                          }}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div>
-                  <div className="flex items-center justify-between gap-2 text-[11px]">
-                    <span className="text-[#9B968C]">Shadow Harshness</span>
-                    <span className="font-mono tabular-nums text-[#F5F1E8]">
-                      {lightingQuality.shadowHarshnessLabel} ·{' '}
-                      {lightingQuality.shadowHarshnessScore}%
-                    </span>
-                  </div>
-                  <div
-                    aria-hidden="true"
-                    className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-white/[0.08]"
-                  >
-                    <div
-                      className={`h-full w-full origin-left rounded-full transition-transform duration-200 ${
-                        lightingQuality.shadowHarshnessLabel === 'Soft'
-                          ? 'bg-[#6CC091]'
-                          : lightingQuality.shadowHarshnessLabel === 'Moderate'
-                            ? 'bg-[#D4A853]'
-                            : 'bg-[#E07A5F]'
-                      }`}
-                      style={{ transform: `scaleX(${lightingQuality.shadowHarshnessScore / 100})` }}
-                    />
-                  </div>
-                </div>
+                <p className="mt-2.5 text-xs leading-relaxed text-[#9B968C]">
+                  {lightingQuality.correctionGuidance}
+                </p>
               </div>
 
-              <p className="mt-2.5 text-xs leading-relaxed text-[#9B968C]">
-                {lightingQuality.correctionGuidance}
-              </p>
-            </>
+              {/* Right Column: Real-Time Lighting Distribution Histogram */}
+              <div className="border-t border-white/[0.07] pt-3.5 md:col-span-5 md:border-t-0 md:border-l md:pt-0 md:pl-5">
+                <LightingHistogram report={lightingQuality} />
+              </div>
+            </div>
           ) : (
             <div className="flex items-center justify-between gap-3 text-xs text-[#9B968C]">
-              <span className="font-semibold text-[#F5F1E8]">Lighting Quality</span>
-              <span>Measuring dynamic range &amp; shadow harshness...</span>
+              <span className="font-semibold text-[#F5F1E8]">Lighting Quality &amp; Histogram</span>
+              <span>Measuring pixel intensity spread &amp; shadow harshness...</span>
             </div>
           )}
         </div>

@@ -9,13 +9,13 @@ interface ShortcutsModalProps {
 const SHORTCUT_ITEMS: { keys: string[]; label: string; detail: string }[] = [
   {
     keys: ['Space'],
-    label: 'Toggle Split Compare',
-    detail: 'Switch active portrait between Final Portrait and Split Compare',
+    label: 'Snap Comparison Slider (50/50)',
+    detail: 'Snap the draggable overlay divider between 50/50 split and full studio portrait',
   },
   {
     keys: ['B'],
-    label: 'Toggle Original Before/After',
-    detail: 'Flip between the generated studio headshot and original selfie',
+    label: 'Snap Original / Studio Portrait',
+    detail: 'Sweep the overlay slider between full original selfie (100%) and full studio (0%)',
   },
   {
     keys: ['G'],

@@ -23,7 +23,7 @@ import {
   type StyleId,
 } from './data/studioCatalog';
 import { TopBar } from './components/TopBar';
-import { ComparisonStage, type CompareViewMode } from './components/ComparisonStage';
+import { ComparisonStage } from './components/ComparisonStage';
 import { RetouchPromptBar } from './components/RetouchPromptBar';
 import { DirectionPanel } from './components/DirectionPanel';
 import { HistoryViewPanel } from './components/HistoryViewPanel';
@@ -79,7 +79,6 @@ export default function App() {
   const [takes, setTakes] = useState<GeneratedTake[]>([]);
   const [activeTakeId, setActiveTakeId] = useState<string | null>(null);
 
-  const [compareMode, setCompareMode] = useState<CompareViewMode>('after');
   const [sliderPosition, setSliderPosition] = useState<number>(50);
   const [retouchPrompt, setRetouchPrompt] = useState<string>('');
   const [critique, setCritique] = useState<SelfieCritique | null>(null);
@@ -91,6 +90,10 @@ export default function App() {
   const [isSharpening, setIsSharpening] = useState<boolean>(false);
   const [isUpdatingBokeh, setIsUpdatingBokeh] = useState<boolean>(false);
   const [isSuggestingRetouches, setIsSuggestingRetouches] = useState<boolean>(false);
+  const [bulkRetouchProgress, setBulkRetouchProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
   const [suggestRetouchError, setSuggestRetouchError] = useState<string | null>(null);
   const [autoSuggestionsByTakeId, setAutoSuggestionsByTakeId] = useState<
     Record<string, string[]>
@@ -341,7 +344,6 @@ export default function App() {
 
       setTakes((prev) => [newTake, ...prev]);
       setActiveTakeId(newTake.id);
-      setCompareMode('after');
       setSliderPosition(50);
     } catch (err) {
       setErrorMessage(
@@ -429,7 +431,6 @@ export default function App() {
 
       setTakes((prev) => [newTake, ...prev]);
       setActiveTakeId(newTake.id);
-      setCompareMode('after');
       setSliderPosition(50);
       setRetouchPrompt('');
     } catch (err) {
@@ -439,6 +440,172 @@ export default function App() {
     } finally {
       setIsGenerating(false);
       setGenerationPhase('');
+    }
+  };
+
+  const handleBulkRetouch = async (rawPrompts: string[]): Promise<boolean> => {
+    if (isGenerating || !activeTake) return false;
+
+    const uniquePrompts: string[] = [];
+    const seen = new Set<string>();
+    for (const raw of rawPrompts) {
+      const cleaned = raw.trim();
+      if (!cleaned) continue;
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniquePrompts.push(cleaned);
+      if (uniquePrompts.length >= 6) break;
+    }
+
+    if (uniquePrompts.length === 0) return false;
+
+    const baseTake = activeTake;
+    const total = uniquePrompts.length;
+    let completedCount = 0;
+
+    setErrorMessage(null);
+    setIsGenerating(true);
+    setBulkRetouchProgress({ completed: 0, total });
+    setGenerationPhase(`Developing ${total} retouch variations in parallel`);
+
+    try {
+      // Reuse or compute segmentation mask once so all parallel variations stay crisp and fast
+      const masks = await getOrComputeMasks(baseTake.sourceImageUrl, baseTake.anchor);
+
+      const settled = await Promise.allSettled(
+        uniquePrompts.map(async (promptText, index) => {
+          const apiRetouch = await safePostJson<{
+            recipe?: DarkroomRecipe;
+            directorNote?: string;
+          }>('/api/headshots/retouch-recipe', {
+            retouchPrompt: promptText,
+            currentRecipe: baseTake.recipe,
+          });
+
+          const resolved =
+            apiRetouch?.recipe
+              ? { recipe: apiRetouch.recipe, directorNote: apiRetouch.directorNote }
+              : applyRetouchLocally(promptText, baseTake.recipe);
+
+          const nextRecipe: DarkroomRecipe = resolved.recipe;
+          const directorNote: string | undefined = resolved.directorNote
+            ? String(resolved.directorNote)
+            : undefined;
+
+          const targetSharpen = nextRecipe.sharpen ?? 0;
+          const { imageUrl: cleanBaseUrl, alignedSourceUrl } = await renderStudioHeadshot(
+            baseTake.sourceImageUrl,
+            masks,
+            { ...nextRecipe, sharpen: 0 },
+            baseTake.anchor
+          );
+          const finalImageUrl =
+            targetSharpen > 0.005
+              ? await applyLocalUnsharpMask(cleanBaseUrl, targetSharpen)
+              : cleanBaseUrl;
+
+          completedCount += 1;
+          setBulkRetouchProgress({ completed: completedCount, total });
+          setGenerationPhase(`Developed ${completedCount} of ${total} variations in parallel`);
+
+          return {
+            index,
+            promptText,
+            nextRecipe,
+            directorNote,
+            cleanBaseUrl,
+            finalImageUrl,
+            alignedSourceUrl,
+          };
+        })
+      );
+
+      const successes = settled
+        .filter(
+          (
+            result
+          ): result is PromiseFulfilledResult<{
+            index: number;
+            promptText: string;
+            nextRecipe: DarkroomRecipe;
+            directorNote: string | undefined;
+            cleanBaseUrl: string;
+            finalImageUrl: string;
+            alignedSourceUrl: string;
+          }> => result.status === 'fulfilled'
+        )
+        .map((result) => result.value)
+        .sort((a, b) => a.index - b.index);
+
+      if (successes.length === 0) {
+        setErrorMessage('Unable to develop the queued retouch variations. Please try again.');
+        return false;
+      }
+
+      const now = Date.now();
+      const createdTakes: GeneratedTake[] = successes.map((item, offset) => {
+        frameCounterRef.current += 1;
+        const resolvedLightingLabel =
+          item.nextRecipe.advancedLightingPreset && item.nextRecipe.advancedLightingPreset !== 'none'
+            ? getAdvancedLightingPresetById(item.nextRecipe.advancedLightingPreset).label
+            : getLightingById(item.nextRecipe.lightingId).label;
+
+        return {
+          id: `take-${now}-${frameCounterRef.current}`,
+          frameNumber: frameCounterRef.current,
+          imageUrl: item.finalImageUrl,
+          baseImageUrl: item.cleanBaseUrl,
+          sourceImageUrl: baseTake.sourceImageUrl,
+          alignedSourceUrl: item.alignedSourceUrl,
+          styleId: item.nextRecipe.styleId,
+          styleName: getStyleById(item.nextRecipe.styleId).name,
+          attireLabel: getAttireById(item.nextRecipe.attireId).label,
+          framingLabel: getFramingById(item.nextRecipe.framingId).label,
+          lightingLabel: resolvedLightingLabel,
+          aspectRatio: item.nextRecipe.aspectRatio,
+          recipe: item.nextRecipe,
+          anchor: baseTake.anchor,
+          retouchPrompt: item.promptText,
+          directorNote: item.directorNote,
+          createdAt: now + offset,
+        };
+      });
+
+      const newestTake = createdTakes[createdTakes.length - 1];
+      setTakes((prev) => [...[...createdTakes].reverse(), ...prev]);
+      setActiveTakeId(newestTake.id);
+      setSliderPosition(50);
+      setConfig((prev) => ({
+        ...prev,
+        styleId: newestTake.recipe.styleId,
+        attireId: newestTake.recipe.attireId,
+        framingId: newestTake.recipe.framingId,
+        smartCrop: Boolean(newestTake.recipe.smartCrop),
+        lightingId: newestTake.recipe.lightingId,
+        advancedLightingPreset: newestTake.recipe.advancedLightingPreset ?? 'none',
+        backdropBlur: Math.round(newestTake.recipe.backdropBlur),
+      }));
+      // Open Session History so all newly generated parallel takes are immediately visible
+      setRightPanelMode('history');
+
+      if (successes.length < total) {
+        setErrorMessage(
+          `Completed ${successes.length} of ${total} retouch variations; ${
+            total - successes.length
+          } failed to render.`
+        );
+      }
+      return true;
+    } catch (err) {
+      setErrorMessage(
+        err instanceof Error ? err.message : 'Unable to run bulk retouching right now.'
+      );
+      return false;
+    } finally {
+      setIsGenerating(false);
+      setGenerationPhase('');
+      setBulkRetouchProgress(null);
     }
   };
 
@@ -508,7 +675,6 @@ export default function App() {
     setSuggestRetouchError(null);
     const found = takes.find((t) => t.id === id);
     if (found) {
-      setCompareMode('after');
       setConfig((prev) => ({
         ...prev,
         styleId: found.recipe.styleId,
@@ -705,10 +871,10 @@ export default function App() {
     isLightboxOpen: lightboxOpen,
     isShortcutsModalOpen: shortcutsModalOpen,
     onToggleSplitCompare: () => {
-      setCompareMode((prev) => (prev === 'split' ? 'after' : 'split'));
+      setSliderPosition((prev) => (prev > 5 && prev < 95 ? 0 : 50));
     },
     onToggleOriginalCompare: () => {
-      setCompareMode((prev) => (prev === 'before' ? 'after' : 'before'));
+      setSliderPosition((prev) => (prev >= 95 ? 0 : 100));
     },
     onGenerate: () => {
       void handleGenerateHeadshot();
@@ -799,7 +965,6 @@ export default function App() {
               detectedAnchor={detectedAnchor}
               currentLightingId={config.lightingId}
               currentAdvancedLightingPreset={config.advancedLightingPreset}
-              compareMode={compareMode}
               sliderPosition={sliderPosition}
               isGenerating={isGenerating}
               generationPhase={generationPhase}
@@ -807,7 +972,6 @@ export default function App() {
               elapsedSeconds={elapsedSeconds}
               takesCount={takes.length}
               isHistoryOpen={rightPanelMode === 'history'}
-              onCompareModeChange={setCompareMode}
               onSliderChange={setSliderPosition}
               onToggleHistory={handleToggleHistoryPanel}
               onFileSelected={(file) => void handleFileSelected(file)}
@@ -833,9 +997,11 @@ export default function App() {
               isGenerating={isGenerating}
               isSharpening={isSharpening}
               isSuggesting={isSuggestingRetouches}
+              bulkProgress={bulkRetouchProgress}
               suggestError={suggestRetouchError}
               onPromptChange={setRetouchPrompt}
               onSubmitPrompt={(custom) => void handleApplyRetouch(custom)}
+              onRunBulkRetouch={handleBulkRetouch}
               onAutoSuggest={() => void handleAutoSuggestRetouches()}
               onSharpenChange={handleSharpenChange}
             />

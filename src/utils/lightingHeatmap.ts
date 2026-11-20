@@ -20,6 +20,35 @@ export interface LightingQualityReport {
   recommendedAdvancedPreset: AdvancedLightingPresetId;
   recommendedPresetLabel: string;
   usedFaceRegion: boolean;
+  /** 48 smoothed, normalized (0..1) luminance intensity distribution bins from black (0) to white (255) */
+  histogramBins: number[];
+  /** 48 exact pixel-percentage shares (0..100, 1 decimal) corresponding to each luminance bin */
+  histogramBinPercents: number[];
+  shadowPercent: number;
+  midtonePercent: number;
+  highlightPercent: number;
+  p02Percent: number;
+  p98Percent: number;
+  meanLuminancePercent: number;
+  /** Detected light-source clock/azimuth angle in degrees (0=top, 90=camera-right, 180=bottom, 270=camera-left) */
+  lightAngleDeg: number;
+  /** Strength of directional lighting vs flat/even illumination (0..1) */
+  lightDirectionStrength: number;
+  /** Human-readable orientation of detected source light */
+  lightOrientationLabel: string;
+}
+
+export interface LightingCompassAlignment {
+  detectedAngleDeg: number;
+  targetAngleDeg: number;
+  deltaDeg: number;
+  absDeltaDeg: number;
+  isEvenlyLit: boolean;
+  matchStatus: 'Aligned' | 'Minor Offset' | 'Cross-Lit';
+  detectedLabel: string;
+  targetLabel: string;
+  shortAdjustment: string;
+  detailedSuggestion: string;
 }
 
 export interface LightingHeatmapAnalysis {
@@ -339,6 +368,18 @@ export async function analyzeLightingQuality(
   let leftCount = 0;
   let rightSum = 0;
   let rightCount = 0;
+  let totalLumSum = 0;
+  let shadowCount = 0;
+  let highlightCount = 0;
+
+  // Weighted directional luminance moments inside face region for 2D light-source orientation
+  const faceCenterPxX = (xMin + xMax) * 0.5;
+  const faceCenterPxY = (yMin + yMax) * 0.5;
+  const faceHalfW = Math.max(1, (xMax - xMin) * 0.5);
+  const faceHalfH = Math.max(1, (yMax - yMin) * 0.5);
+  let dirMomentX = 0;
+  let dirMomentY = 0;
+  let dirWeightSum = 0;
 
   for (let y = 0; y < height; y++) {
     const row = y * width;
@@ -347,11 +388,14 @@ export async function analyzeLightingQuality(
       const idx = (row + x) * 4;
       const l = (0.2126 * data[idx] + 0.7152 * data[idx + 1] + 0.0722 * data[idx + 2]) / 255;
       lum[row + x] = l;
+      totalLumSum += l;
       const bin = Math.max(0, Math.min(255, Math.round(l * 255)));
       hist[bin] += 1;
 
       if (l < 0.04) blackClipCount += 1;
       if (l > 0.96) whiteClipCount += 1;
+      if (l < 0.3) shadowCount += 1;
+      else if (l > 0.72) highlightCount += 1;
 
       if (inFaceY && x >= xMin && x <= xMax) {
         faceLumSum += l;
@@ -363,6 +407,16 @@ export async function analyzeLightingQuality(
         } else {
           rightSum += l;
           rightCount += 1;
+        }
+
+        const nx = (x - faceCenterPxX) / faceHalfW;
+        const ny = (y - faceCenterPxY) / faceHalfH;
+        // Circular portrait weighting emphasizes cheeks, forehead & jawline over background corners
+        if (nx * nx + ny * ny <= 1.05) {
+          const w = Math.pow(Math.max(0.02, l), 1.6);
+          dirMomentX += nx * w;
+          dirMomentY += ny * w;
+          dirWeightSum += w;
         }
       }
     }
@@ -514,6 +568,65 @@ export async function analyzeLightingQuality(
       'Slightly flat tonal range — Rembrandt studio lighting will add crisp dimensional modeling.';
   }
 
+  // 4. Build 48-bin luminance distribution histogram for real-time tonal visualization
+  const BIN_COUNT = 48;
+  const rawCounts = new Float64Array(BIN_COUNT);
+  for (let b = 0; b < 256; b++) {
+    const bucket = Math.min(BIN_COUNT - 1, Math.floor((b / 256) * BIN_COUNT));
+    rawCounts[bucket] += hist[b];
+  }
+
+  const histogramBinPercents: number[] = Array.from(rawCounts, (count) =>
+    Number(((count / Math.max(1, totalPixels)) * 100).toFixed(1))
+  );
+
+  // Light 3-tap smoothing so curve reads like an optical darkroom light meter without hiding spikes
+  const smoothed = new Float64Array(BIN_COUNT);
+  for (let i = 0; i < BIN_COUNT; i++) {
+    const prev = rawCounts[Math.max(0, i - 1)];
+    const curr = rawCounts[i];
+    const next = rawCounts[Math.min(BIN_COUNT - 1, i + 1)];
+    smoothed[i] = prev * 0.2 + curr * 0.6 + next * 0.2;
+  }
+
+  // Normalize against the 95th-percentile bin so single clipped walls don't crush the entire curve
+  const sortedPeaks = Array.from(smoothed).sort((a, b) => a - b);
+  const robustPeak = Math.max(
+    1,
+    sortedPeaks[Math.min(BIN_COUNT - 1, Math.floor(BIN_COUNT * 0.94))] || sortedPeaks[BIN_COUNT - 1]
+  );
+  const histogramBins: number[] = Array.from(smoothed, (val) =>
+    Number(Math.min(1, val / robustPeak).toFixed(3))
+  );
+
+  const shadowPercent = Math.round((shadowCount / Math.max(1, totalPixels)) * 100);
+  const highlightPercent = Math.round((highlightCount / Math.max(1, totalPixels)) * 100);
+  const midtonePercent = Math.max(0, 100 - shadowPercent - highlightPercent);
+  const meanLuminancePercent = Math.round((totalLumSum / Math.max(1, totalPixels)) * 100);
+
+  // 5. Compute 2D facial light-source orientation (0°=Top, 90°=Right, 180°=Bottom, 270°=Left)
+  const normDirX = dirWeightSum > 0 ? dirMomentX / dirWeightSum : 0;
+  const normDirY = dirWeightSum > 0 ? dirMomentY / dirWeightSum : -0.05;
+  // Blend moment X with measured left/right facial asymmetry for robust side-light detection
+  const blendedX = normDirX * 0.72 + (rightMean - leftMean) * 1.45;
+  const blendedY = normDirY * 0.85;
+  const vectorMag = Math.hypot(blendedX, blendedY);
+  const lightDirectionStrength = Number(Math.min(1, vectorMag / 0.24).toFixed(2));
+  const rawClockDeg = ((Math.atan2(blendedX, -blendedY) * 180) / Math.PI + 360) % 360;
+  const lightAngleDeg = Math.round(rawClockDeg) % 360;
+
+  let lightOrientationLabel = 'Front · Even';
+  if (lightDirectionStrength >= 0.22) {
+    if (lightAngleDeg >= 338 || lightAngleDeg < 23) lightOrientationLabel = 'Overhead Key';
+    else if (lightAngleDeg < 68) lightOrientationLabel = 'Upper-Right Key';
+    else if (lightAngleDeg < 113) lightOrientationLabel = 'Right Side Key';
+    else if (lightAngleDeg < 158) lightOrientationLabel = 'Lower-Right Fill';
+    else if (lightAngleDeg < 203) lightOrientationLabel = 'Underlit · Low';
+    else if (lightAngleDeg < 248) lightOrientationLabel = 'Lower-Left Fill';
+    else if (lightAngleDeg < 293) lightOrientationLabel = 'Left Side Key';
+    else lightOrientationLabel = 'Upper-Left Key';
+  }
+
   const report: LightingQualityReport = {
     rating,
     score,
@@ -528,6 +641,17 @@ export async function analyzeLightingQuality(
     recommendedAdvancedPreset,
     recommendedPresetLabel,
     usedFaceRegion,
+    histogramBins,
+    histogramBinPercents,
+    shadowPercent,
+    midtonePercent,
+    highlightPercent,
+    p02Percent: Math.round(p02 * 100),
+    p98Percent: Math.round(p98 * 100),
+    meanLuminancePercent,
+    lightAngleDeg,
+    lightDirectionStrength,
+    lightOrientationLabel,
   };
 
   if (qualityCache.size >= MAX_CACHE_ENTRIES) {
@@ -539,4 +663,104 @@ export async function analyzeLightingQuality(
   qualityCache.set(cacheKey, report);
 
   return report;
+}
+
+/**
+ * Evaluates how well the source portrait's detected light-source angle matches the
+ * currently selected studio lighting setup, returning subtle capture angle guidance.
+ */
+export function evaluateLightingCompassAlignment(
+  report: LightingQualityReport,
+  lightingId: LightingId,
+  advancedPreset: AdvancedLightingPresetId
+): LightingCompassAlignment {
+  let targetAngleDeg = 325;
+  let targetLabel = 'Softbox Upper-Left';
+
+  if (advancedPreset === 'golden-hour') {
+    targetAngleDeg = 42;
+    targetLabel = 'Golden Hour Upper-Right';
+  } else if (advancedPreset === 'noir-high-contrast') {
+    targetAngleDeg = 295;
+    targetLabel = 'Noir Sculpted Left';
+  } else if (advancedPreset === 'soft-diffused') {
+    targetAngleDeg = 0;
+    targetLabel = 'Soft Diffused Front';
+  } else {
+    switch (lightingId) {
+      case 'rembrandt':
+        targetAngleDeg = 312;
+        targetLabel = 'Rembrandt 45° Left';
+        break;
+      case 'golden-rim':
+        targetAngleDeg = 48;
+        targetLabel = 'Golden Rim Upper-Right';
+        break;
+      case 'diffused-window':
+        targetAngleDeg = 300;
+        targetLabel = 'Window Left Key';
+        break;
+      case 'softbox-key':
+      default:
+        targetAngleDeg = 328;
+        targetLabel = 'Softbox Upper-Left';
+        break;
+    }
+  }
+
+  const detectedAngleDeg = report.lightAngleDeg;
+  const isEvenlyLit = report.lightDirectionStrength < 0.22;
+
+  // Signed shortest angular difference (-180..+180) from detected source light to studio target
+  let deltaDeg = ((targetAngleDeg - detectedAngleDeg + 540) % 360) - 180;
+  if (deltaDeg === -180) deltaDeg = 180;
+  const absDeltaDeg = isEvenlyLit ? 0 : Math.abs(Math.round(deltaDeg));
+
+  let matchStatus: LightingCompassAlignment['matchStatus'] = 'Aligned';
+  if (!isEvenlyLit) {
+    if (absDeltaDeg > 78 || (detectedAngleDeg >= 135 && detectedAngleDeg <= 225)) {
+      matchStatus = 'Cross-Lit';
+    } else if (absDeltaDeg > 24) {
+      matchStatus = 'Minor Offset';
+    }
+  }
+
+  // Subtle practical angle guidance for source photo integration
+  const subtleTurnDeg = Math.min(25, Math.max(8, Math.round(absDeltaDeg * 0.35)));
+  let shortAdjustment = 'Key aligned';
+  let detailedSuggestion = `Source light aligns closely with ${targetLabel} — natural cheek and rim blending.`;
+
+  if (isEvenlyLit) {
+    shortAdjustment = 'Even front light';
+    detailedSuggestion = `Even ambient fill blends cleanly into ${targetLabel}; tilt face ~10° off-axis if you want stronger dimensional sculpting.`;
+  } else if (detectedAngleDeg >= 135 && detectedAngleDeg <= 225) {
+    shortAdjustment = 'Raise light ~20°';
+    detailedSuggestion = `Source light sits low (${detectedAngleDeg}°). Raise the camera or light ~20° above eye level so facial shadows match ${targetLabel}.`;
+  } else if (matchStatus === 'Aligned') {
+    shortAdjustment = `Aligned (${absDeltaDeg}°)`;
+    detailedSuggestion = `${report.lightOrientationLabel} (${detectedAngleDeg}°) matches ${targetLabel} (${targetAngleDeg}°) for seamless studio integration.`;
+  } else if (matchStatus === 'Minor Offset') {
+    const turnDir = deltaDeg > 0 ? 'left' : 'right';
+    shortAdjustment = `Turn ~${subtleTurnDeg}° ${turnDir}`;
+    detailedSuggestion = `Turn face ~${subtleTurnDeg}° ${turnDir} (or rotate source key ${Math.abs(
+      Math.round(deltaDeg)
+    )}°) so specular highlights align with ${targetLabel}.`;
+  } else {
+    const turnDir = deltaDeg > 0 ? 'left' : 'right';
+    shortAdjustment = `Angle ~${subtleTurnDeg}° ${turnDir}`;
+    detailedSuggestion = `Source key (${report.lightOrientationLabel}) opposes ${targetLabel}. Angle subject ~${subtleTurnDeg}° ${turnDir} toward light—or choose a matching studio key side for higher realism.`;
+  }
+
+  return {
+    detectedAngleDeg,
+    targetAngleDeg,
+    deltaDeg: Math.round(deltaDeg),
+    absDeltaDeg,
+    isEvenlyLit,
+    matchStatus,
+    detectedLabel: report.lightOrientationLabel,
+    targetLabel,
+    shortAdjustment,
+    detailedSuggestion,
+  };
 }

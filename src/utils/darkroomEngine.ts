@@ -51,6 +51,22 @@ async function resolveAvailableModelUrl(): Promise<string> {
   return '/src/assets/models/selfie_segmenter.tflite';
 }
 
+function isBenignMediaPipeStderr(args: unknown[]): boolean {
+  const message = args
+    .map((arg) => (typeof arg === 'string' ? arg : ''))
+    .join(' ')
+    .trim();
+  if (!message) return false;
+  return (
+    (/^INFO:\s/i.test(message) &&
+      (message.includes('TensorFlow Lite') ||
+        message.includes('XNNPACK') ||
+        message.includes('MediaPipe') ||
+        message.includes('delegate'))) ||
+    message.includes('absl::InitializeLog()')
+  );
+}
+
 async function getSegmenter(): Promise<ImageSegmenter | null> {
   if (segmenterPromise) return segmenterPromise;
 
@@ -61,28 +77,44 @@ async function getSegmenter(): Promise<ImageSegmenter | null> {
       'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.22-rc.20250304/wasm',
     ];
 
-    // Prefer CPU (WASM SIMD) first for single-image segmentation: bit-exact across all GPUs/browsers
-    // and avoids WebGL2 FBO float-readback bugs that can corrupt half of a confidence mask.
-    for (const wasmPath of wasmPaths) {
-      for (const delegate of ['CPU', 'GPU'] as const) {
-        try {
-          const vision = await FilesetResolver.forVisionTasks(wasmPath);
-          const segmenter = await ImageSegmenter.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath,
-              delegate,
-            },
-            runningMode: 'IMAGE',
-            outputCategoryMask: false,
-            outputConfidenceMasks: true,
-          });
-          return segmenter;
-        } catch {
-          // Try next delegate / wasm location
+    // MediaPipe's Emscripten WASM bundle binds `console.error` at module instantiation
+    // and writes TFLite `INFO:` messages (such as XNNPACK delegate creation) to stderr.
+    // Temporarily wrap `console.error` during initialization so the WASM `err` sink
+    // filters benign TFLite INFO lines while forwarding all real errors.
+    const previousConsoleError = console.error;
+    console.error = (...args: unknown[]) => {
+      if (isBenignMediaPipeStderr(args)) {
+        return;
+      }
+      previousConsoleError.apply(console, args);
+    };
+
+    try {
+      // Prefer CPU (WASM SIMD) first for single-image segmentation: bit-exact across all GPUs/browsers
+      // and avoids WebGL2 FBO float-readback bugs that can corrupt half of a confidence mask.
+      for (const wasmPath of wasmPaths) {
+        for (const delegate of ['CPU', 'GPU'] as const) {
+          try {
+            const vision = await FilesetResolver.forVisionTasks(wasmPath);
+            const segmenter = await ImageSegmenter.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath,
+                delegate,
+              },
+              runningMode: 'IMAGE',
+              outputCategoryMask: false,
+              outputConfidenceMasks: true,
+            });
+            return segmenter;
+          } catch {
+            // Try next delegate / wasm location
+          }
         }
       }
+      return null;
+    } finally {
+      console.error = previousConsoleError;
     }
-    return null;
   })();
 
   return segmenterPromise;

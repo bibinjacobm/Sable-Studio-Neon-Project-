@@ -20,10 +20,10 @@
 - **Depth of Field (`Bokeh` Slider)**: Adjust optical background blur (`0–20px`, mapped to `f/11`–`f/1.4` aperture readouts) in real time using the cached neural segmentation masks to blur the backdrop cleanly while keeping your portrait subject razor-sharp.
 
 ### Darkroom Workbench & Retouching
-- **Before & After Comparison Stage + Light Intensity Heat-Map**: Toggle seamlessly between **Final Portrait**, interactive **Split Compare** (draggable brass curtain divider with keyboard arrow support), and pixel-aligned **Original** (complete with a floating interactive hover tooltip explaining side-by-side verification and offering one-click `Split 50/50` / `View Original` shortcuts), plus a false-color **Light Map** overlay on the Before/source selfie that maps shadow density, balanced midtones, peak highlights, directional key bias, and style-recommendation context.
-- **Input Lighting Quality Indicator (`Low / Med / High`)**: Automatically analyzes the uploaded selfie's usable dynamic range (2nd–98th percentile tonal span and clipping) and face-anchored shadow-edge harshness (local gradient steepness and left/right illumination asymmetry), displaying a `Low` / `Med` / `High` quality rating with individual Dynamic Range and Shadow Harshness meters, correction intensity (`Minimal`, `Moderate`, or `Heavy correction`), and a one-click button to apply the recommended studio lighting preset.
+- **Dynamic Before & After Swipe Slider + Light Intensity Heat-Map & Lighting Direction Compass**: Always-active draggable brass overlay divider lets you swipe smoothly (`0%–100%`) between the pixel-aligned original selfie and generated studio portrait (with double-click snap, keyboard arrow stepping, and an interactive hover tooltip with `Center 50/50`, `Full Studio`, and `Original` quick snaps), paired with a false-color **Light Map** overlay and a toggleable **Lighting Direction Compass** overlay that detects the source photo's 2D key-light angle, compares it against the active studio lighting setup, and suggests subtle head/light angle adjustments to maximize integration realism.
+- **Input Lighting Quality Indicator (`Low / Med / High`) & Real-Time Luminance Histogram**: Automatically analyzes the uploaded selfie's usable dynamic range (2nd–98th percentile tonal span and clipping) and face-anchored shadow-edge harshness (local gradient steepness and left/right illumination asymmetry), displaying a `Low` / `Med` / `High` quality rating, individual Dynamic Range and Shadow Harshness meters, one-click recommended studio lighting preset apply, and a side-by-side interactive 48-bin **Luminance Histogram** visualizing the source portrait's Shadow / Midtone / Highlight pixel intensity spread, usable dynamic range window, mean luminance, and hover bin inspection.
 - **Photographer's Lighting Critique**: Analyzes selfie exposure, contrast spread, and ambient color cast to recommend an optimal backdrop, wardrobe tone, framing, and lighting setup with one-click apply.
-- **Natural-Language Retouching Prompt & AI Auto-Suggest**: Refine any active frame via plain-English cues (e.g., softening skin texture, increasing background depth, golden rim light, tighter 85mm crop, or backdrop swaps), or click **Auto-Suggest** next to the input field to generate 4 fresh, context-aware retouching prompts tailored to the active portrait's style and tonal recipe via a lightweight Gemini (`gemini-4-hydrogen`) call.
+- **Natural-Language Retouching Prompt, AI Auto-Suggest & Bulk Retouch**: Refine any active frame via plain-English cues (e.g., softening skin texture, increasing background depth, golden rim light, tighter 85mm crop, or backdrop swaps), click **Auto-Suggest** to generate 4 context-aware prompts via lightweight Gemini (`gemini-4-hydrogen`), or toggle **Bulk Retouch** to queue up to 6 variations for the active take, execute them in parallel against the cached segmentation mask, and inspect all generated takes side-by-side in the Session History panel.
 - **Local Unsharp Masking (`Sharpen` Slider)**: Non-destructive luminance-guided unsharp masking (`0%–100%`) applied directly via the 2D canvas engine, reinforcing micro-contrast on eyes, hair, and edges while protecting smooth skin and backdrop bokeh.
 
 ### Session Management & Professional Exports
@@ -33,6 +33,7 @@
 - **Embedded EXIF Metadata**: Every downloaded portrait (single PNG or inside ZIP archives) embeds spec-compliant TIFF 6.0 / EXIF 2.32 metadata (`eXIf` + `tEXt` chunks for PNG; `APP1` segment for JPEG) recording **Sable Studio** branding (`Make`, `Software`, `Artist`, `Copyright`) and the frame's style, lighting, framing, attire, aspect ratio, and retouch tags (`ImageDescription`, `Model`, `UserComment`, `DateTimeOriginal`).
 - **Selective Batch Export & Compressed ZIP Archives**: Toggle **Batch Export** mode inside the Session History panel to multi-select specific takes (with `Select All` / `Select Visible` and `Clear` controls) and bundle them into a single DEFLATE-compressed ZIP archive alongside `generation-parameters-summary.txt` detailing every take's style, wardrobe, framing, Smart Crop status, lighting, tonal calibration, optics, facial anchor, and retouch notes—or use **Download All** to archive the entire session in one click.
 - **Branded PDF Portfolio Contact Sheet (`Export Portfolio`)**: Aggregate selected takes from the Session History panel (or export the full session from the Darkroom Reel) into a multi-page, A4 Editorial Darkroom PDF contact sheet (`sable-studio-portfolio-*.pdf`) with an optional custom portfolio cover title, aspect-preserved portrait plates, and full generation metadata and styling parameters (style, wardrobe, framing, Smart Crop, lighting & advanced preset, Depth of Field aperture, tonal calibration, finish metrics, and retouch notes).
+- **Studio Session Countdown Timer**: Built-in focus countdown timer in the TopBar with drift-resistant ticking, one-click start/pause, quick duration presets (`15m`, `25m`, `45m`, `60m`), custom duration input (`1–180` minutes, persisted across reloads), `+5m` session extension, elapsed progress bar, and a toggleable completion chime.
 
 ---
 
@@ -42,8 +43,8 @@ Press `?` anywhere in the studio (outside text inputs) to view the shortcut refe
 
 | Key | Action |
 | --- | --- |
-| `Space` | Toggle **Split Compare** vs **Final Portrait** |
-| `B` | Flip between **Original** and **Final Portrait** |
+| `Space` | Snap draggable comparison slider between **50/50 Split** and **Full Studio Portrait** |
+| `B` | Sweep comparison slider between **Full Original Selfie** and **Full Studio Portrait** |
 | `G` | Trigger **Generate Studio Headshot** |
 | `H` | Toggle right panel between **Direction** and **Session History** |
 | `[` / `]` | Step to the previous / next take in the session |
@@ -149,8 +150,11 @@ NODE_ENV=production npm start
     │   ├── localDarkroomAi.ts       # Client-side photometric analysis, framing planner & retouch fallback
     │   └── portfolioPdf.ts          # Branded A4 editorial darkroom PDF contact sheet generator
     ├── components/
-    │   ├── TopBar.tsx               # Three-zone editorial header navigation
-    │   ├── ComparisonStage.tsx      # Interactive Before/After split slider & portrait viewport
+    │   ├── TopBar.tsx               # Editorial header navigation & Upload Selfie action
+    │   ├── SessionTimer.tsx         # Studio session countdown timer with custom duration & presets
+    │   ├── ComparisonStage.tsx      # Interactive draggable Before/After swipe stage & overlays
+    │   ├── LightingCompassOverlay.tsx # Studio light-source direction compass & angle adjustment guide
+    │   ├── LightingHistogram.tsx    # Real-time 48-bin source portrait luminance distribution histogram
     │   ├── RetouchPromptBar.tsx     # Natural-language retouch bar, quick cues & Sharpen slider
     │   ├── DirectionPanel.tsx       # Backdrop, attire, framing, lighting, bokeh & output controls
     │   ├── HistoryViewPanel.tsx     # Side-by-side session take grid, filters, Export Portfolio PDF & Batch ZIP
