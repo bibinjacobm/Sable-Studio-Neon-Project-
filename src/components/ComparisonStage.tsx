@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Download,
   Expand,
@@ -6,13 +6,23 @@ import {
   MoveHorizontal,
   RefreshCw,
   SlidersHorizontal,
+  SunMedium,
   Upload,
+  X,
 } from 'lucide-react';
-import type {
-  GeneratedTake,
-  SourcePortrait,
-  StudioStylePreset,
+import {
+  getStyleById,
+  type GeneratedTake,
+  type SelfieCritique,
+  type SourcePortrait,
+  type StudioStylePreset,
 } from '../data/studioCatalog';
+import {
+  analyzeLightingQuality,
+  generateLightingHeatmap,
+  type LightingHeatmapAnalysis,
+  type LightingQualityReport,
+} from '../utils/lightingHeatmap';
 
 export type CompareViewMode = 'split' | 'after' | 'before';
 
@@ -20,6 +30,7 @@ interface ComparisonStageProps {
   sourcePortrait: SourcePortrait | null;
   activeTake: GeneratedTake | null;
   selectedStyle: StudioStylePreset;
+  critique: SelfieCritique | null;
   compareMode: CompareViewMode;
   sliderPosition: number;
   isGenerating: boolean;
@@ -42,6 +53,7 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   sourcePortrait,
   activeTake,
   selectedStyle,
+  critique,
   compareMode,
   sliderPosition,
   isGenerating,
@@ -60,8 +72,128 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
   onDownload,
 }) => {
   const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [showHeatmap, setShowHeatmap] = useState(false);
+  const [heatmapAnalysis, setHeatmapAnalysis] = useState<LightingHeatmapAnalysis | null>(null);
+  const [lightingQuality, setLightingQuality] = useState<LightingQualityReport | null>(null);
+  const [isCompareTooltipOpen, setIsCompareTooltipOpen] = useState(false);
   const sliderContainerRef = useRef<HTMLDivElement | null>(null);
   const isPointerDownRef = useRef(false);
+  const tooltipCloseTimerRef = useRef<number | null>(null);
+
+  const openCompareTooltip = useCallback(() => {
+    if (tooltipCloseTimerRef.current !== null) {
+      window.clearTimeout(tooltipCloseTimerRef.current);
+      tooltipCloseTimerRef.current = null;
+    }
+    setIsCompareTooltipOpen(true);
+  }, []);
+
+  const scheduleCloseCompareTooltip = useCallback(() => {
+    if (tooltipCloseTimerRef.current !== null) {
+      window.clearTimeout(tooltipCloseTimerRef.current);
+    }
+    tooltipCloseTimerRef.current = window.setTimeout(() => {
+      tooltipCloseTimerRef.current = null;
+      setIsCompareTooltipOpen(false);
+    }, 150);
+  }, []);
+
+  const closeCompareTooltipNow = useCallback(() => {
+    if (tooltipCloseTimerRef.current !== null) {
+      window.clearTimeout(tooltipCloseTimerRef.current);
+      tooltipCloseTimerRef.current = null;
+    }
+    setIsCompareTooltipOpen(false);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (tooltipCloseTimerRef.current !== null) {
+        window.clearTimeout(tooltipCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isCompareTooltipOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        closeCompareTooltipNow();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isCompareTooltipOpen, closeCompareTooltipNow]);
+
+  const inputSelfieUrl = sourcePortrait?.dataUrl ?? activeTake?.sourceImageUrl ?? null;
+  const beforeSourceUrl = activeTake
+    ? activeTake.alignedSourceUrl || activeTake.sourceImageUrl
+    : sourcePortrait?.dataUrl ?? null;
+
+  const isBeforeViewVisible = Boolean(
+    beforeSourceUrl && (!activeTake || compareMode === 'before' || compareMode === 'split')
+  );
+  const isHeatmapActive = showHeatmap && isBeforeViewVisible;
+
+  useEffect(() => {
+    if (!inputSelfieUrl) {
+      setLightingQuality(null);
+      return;
+    }
+
+    let cancelled = false;
+    void analyzeLightingQuality(inputSelfieUrl)
+      .then((report) => {
+        if (!cancelled) {
+          setLightingQuality(report);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setLightingQuality(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [inputSelfieUrl]);
+
+  useEffect(() => {
+    if (!beforeSourceUrl) {
+      setShowHeatmap(false);
+      setHeatmapAnalysis(null);
+      return;
+    }
+    if (!showHeatmap) return;
+
+    let cancelled = false;
+    void generateLightingHeatmap(beforeSourceUrl)
+      .then((result) => {
+        if (!cancelled) {
+          setHeatmapAnalysis(result);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHeatmapAnalysis(null);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [beforeSourceUrl, showHeatmap]);
+
+  const handleToggleHeatmap = () => {
+    if (!beforeSourceUrl) return;
+    if (activeTake && compareMode === 'after') {
+      onCompareModeChange('before');
+      setShowHeatmap(true);
+      return;
+    }
+    setShowHeatmap((prev) => !prev);
+  };
 
   const updateSliderFromClientX = useCallback(
     (clientX: number) => {
@@ -175,31 +307,127 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
         <div className="flex flex-wrap items-center gap-2">
           {canCompare && (
             <div
-              role="group"
-              aria-label="Comparison view mode"
-              className="inline-flex items-center rounded-md border border-white/[0.08] bg-[#141416] p-0.5"
+              className="relative inline-flex"
+              onMouseEnter={openCompareTooltip}
+              onMouseLeave={scheduleCloseCompareTooltip}
+              onFocus={openCompareTooltip}
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                  closeCompareTooltipNow();
+                }
+              }}
             >
-              {(
-                [
-                  { id: 'after', label: 'Final Portrait' },
-                  { id: 'split', label: 'Split Compare' },
-                  { id: 'before', label: 'Original' },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => onCompareModeChange(tab.id)}
-                  className={`rounded-[5px] px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 cursor-pointer ${
-                    compareMode === tab.id
-                      ? 'bg-[#26262B] text-[#F5F1E8]'
-                      : 'text-[#9B968C] hover:text-[#F5F1E8]'
-                  }`}
+              <div
+                role="group"
+                aria-label="Before and After comparison view mode"
+                aria-describedby={isCompareTooltipOpen ? 'compare-toggle-tooltip' : undefined}
+                className="inline-flex items-center rounded-md border border-white/[0.08] bg-[#141416] p-0.5"
+              >
+                {(
+                  [
+                    { id: 'after', label: 'Final Portrait' },
+                    { id: 'split', label: 'Split Compare' },
+                    { id: 'before', label: 'Original' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => onCompareModeChange(tab.id)}
+                    aria-pressed={compareMode === tab.id}
+                    className={`rounded-[5px] px-2.5 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                      compareMode === tab.id
+                        ? 'bg-[#26262B] text-[#F5F1E8]'
+                        : 'text-[#9B968C] hover:text-[#F5F1E8]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Floating Interactive Tooltip with seamless hover bridge */}
+              {isCompareTooltipOpen && (
+                <div
+                  id="compare-toggle-tooltip"
+                  role="tooltip"
+                  onMouseEnter={openCompareTooltip}
+                  onMouseLeave={scheduleCloseCompareTooltip}
+                  className="absolute top-full left-0 z-30 w-72 pt-2.5 sm:w-80"
                 >
-                  {tab.label}
-                </button>
-              ))}
+                  <div className="relative rounded-lg border border-[#D4A853]/35 bg-[#141416]/98 p-3.5 text-left shadow-[0_16px_40px_rgba(0,0,0,0.72)] backdrop-blur-md">
+                    <span
+                      aria-hidden="true"
+                      className="absolute -top-1.5 left-6 h-2.5 w-2.5 rotate-45 border-t border-l border-[#D4A853]/35 bg-[#141416]"
+                    />
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-xs font-semibold text-[#F5F1E8]">
+                        Before / After Verification
+                      </p>
+                      <button
+                        type="button"
+                        onClick={closeCompareTooltipNow}
+                        aria-label="Dismiss comparison tip"
+                        className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-[#9B968C] transition-colors hover:bg-white/[0.08] hover:text-[#F5F1E8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                      >
+                        <X className="h-3 w-3" aria-hidden="true" />
+                      </button>
+                    </div>
+                    <p className="mt-1.5 text-xs leading-relaxed text-[#9B968C]">
+                      Allows side-by-side verification of studio-grade lighting, backdrop, and
+                      retouching enhancements directly against your original input selfie.
+                    </p>
+                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.07] pt-2.5 text-[11px]">
+                      <div className="flex items-center gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onCompareModeChange('split');
+                            onSliderChange(50);
+                          }}
+                          className="font-medium text-[#D4A853] underline decoration-[#D4A853]/50 underline-offset-4 transition-colors hover:text-[#F5F1E8] whitespace-nowrap cursor-pointer"
+                        >
+                          Split 50/50
+                        </button>
+                        <span aria-hidden="true" className="text-[#9B968C]">
+                          ·
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => onCompareModeChange('before')}
+                          className="font-medium text-[#F5F1E8]/85 transition-colors hover:text-[#D4A853] whitespace-nowrap cursor-pointer"
+                        >
+                          View Original
+                        </button>
+                      </div>
+                      <span className="font-mono tabular-nums text-[#9B968C] whitespace-nowrap">
+                        Space · B
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
+          )}
+
+          {beforeSourceUrl && (
+            <button
+              type="button"
+              onClick={handleToggleHeatmap}
+              aria-pressed={isHeatmapActive}
+              title="Toggle lighting intensity & shadow distribution heat-map on Before view"
+              className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs font-medium whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                isHeatmapActive
+                  ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                  : 'border-white/[0.09] bg-[#141416] text-[#9B968C] hover:border-white/25 hover:text-[#F5F1E8]'
+              }`}
+            >
+              <SunMedium
+                className={`h-3.5 w-3.5 shrink-0 ${isHeatmapActive ? 'text-[#D4A853]' : ''}`}
+                aria-hidden="true"
+              />
+              <span>Light Map</span>
+            </button>
           )}
 
           {takesCount > 0 && (
@@ -314,6 +542,55 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
               className="h-full w-full object-cover"
             />
 
+            {/* False-color lighting intensity & shadow distribution overlay in full 'Before' view */}
+            {compareMode === 'before' && showHeatmap && heatmapAnalysis && (
+              <>
+                <img
+                  src={heatmapAnalysis.overlayDataUrl}
+                  alt="False-color lighting intensity and shadow distribution heat-map overlay"
+                  draggable={false}
+                  className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                />
+                <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/45 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
+                  <span>Before · Light Intensity Map</span>
+                  <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
+                    {heatmapAnalysis.contrastLabel} · Key{' '}
+                    {heatmapAnalysis.keyBias === 'balanced'
+                      ? 'Even'
+                      : heatmapAnalysis.keyBias === 'left'
+                        ? 'Left'
+                        : 'Right'}
+                  </span>
+                </div>
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/75 to-transparent px-4 pt-10 pb-3.5">
+                  <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-[#F5F1E8]/90">
+                    <span>Shadow</span>
+                    <span className="font-mono tabular-nums text-[#9B968C]">
+                      S {heatmapAnalysis.shadowPercent}% · M {heatmapAnalysis.midtonePercent}% · H{' '}
+                      {heatmapAnalysis.highlightPercent}%
+                    </span>
+                    <span>Peak</span>
+                  </div>
+                  <div
+                    aria-hidden="true"
+                    className="h-1.5 w-full rounded-full bg-[linear-gradient(to_right,#182260_0%,#284EA8_20%,#2E90A6_40%,#4EA67C_58%,#D4A853_76%,#E87236_90%,#E03A3A_100%)]"
+                  />
+                  <p className="mt-2 text-[11px] leading-relaxed text-[#F5F1E8]/90">
+                    {critique ? (
+                      <>
+                        <span className="font-semibold text-[#D4A853]">
+                          Suggested · {getStyleById(critique.recommendedStyleId).shortName}:
+                        </span>{' '}
+                        {critique.lightingAssessment}
+                      </>
+                    ) : (
+                      heatmapAnalysis.exposureSummary
+                    )}
+                  </p>
+                </div>
+              </>
+            )}
+
             {/* Clipped overlay layer: Pixel-aligned Original Selfie on left side ONLY in Split Compare mode */}
             {canCompare && compareMode === 'split' && (
               <>
@@ -328,6 +605,14 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                     draggable={false}
                     className="h-full w-full object-cover"
                   />
+                  {showHeatmap && heatmapAnalysis && (
+                    <img
+                      src={heatmapAnalysis.overlayDataUrl}
+                      alt="False-color lighting intensity heat-map on original selfie"
+                      draggable={false}
+                      className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                    />
+                  )}
                 </div>
 
                 {/* Brass Vertical Curtain Line & Tactile Handle */}
@@ -342,13 +627,22 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
 
                 {/* Top Corner Labels */}
                 <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/75 via-black/30 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
-                  <span>Before · Original</span>
+                  <span>{showHeatmap ? 'Before · Light Map' : 'Before · Original'}</span>
                   <span>After · Studio</span>
                 </div>
 
                 {/* Bottom Scrim Drag Indicator */}
-                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/75 via-black/30 to-transparent px-4 pt-8 pb-3 text-xs text-[#F5F1E8]/90">
-                  <span>Drag divider to compare</span>
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-between bg-gradient-to-t from-black/80 via-black/35 to-transparent px-4 pt-8 pb-3 text-xs text-[#F5F1E8]/90">
+                  <span>
+                    {showHeatmap && heatmapAnalysis ? (
+                      <span className="font-mono text-[11px] tabular-nums">
+                        S {heatmapAnalysis.shadowPercent}% · M {heatmapAnalysis.midtonePercent}% · H{' '}
+                        {heatmapAnalysis.highlightPercent}%
+                      </span>
+                    ) : (
+                      'Drag divider to compare'
+                    )}
+                  </span>
                   <span className="font-mono tabular-nums text-[#D4A853]">
                     {Math.round(sliderPosition)}% / {100 - Math.round(sliderPosition)}%
                   </span>
@@ -365,11 +659,59 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
                 referrerPolicy="no-referrer"
                 className="h-full w-full object-cover"
               />
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-4 pt-10 pb-4">
-                <p className="text-xs text-[#F5F1E8]">
-                  Source frame loaded · Ready for {selectedStyle.name}
-                </p>
-              </div>
+              {showHeatmap && heatmapAnalysis ? (
+                <>
+                  <img
+                    src={heatmapAnalysis.overlayDataUrl}
+                    alt="False-color lighting intensity and shadow distribution heat-map overlay"
+                    draggable={false}
+                    className="pointer-events-none absolute inset-0 h-full w-full object-cover"
+                  />
+                  <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/45 to-transparent px-4 pt-3 pb-7 text-xs font-medium text-[#F5F1E8]">
+                    <span>Source · Light Intensity Map</span>
+                    <span className="font-mono text-[11px] tabular-nums text-[#D4A853]">
+                      {heatmapAnalysis.contrastLabel} · Key{' '}
+                      {heatmapAnalysis.keyBias === 'balanced'
+                        ? 'Even'
+                        : heatmapAnalysis.keyBias === 'left'
+                          ? 'Left'
+                          : 'Right'}
+                    </span>
+                  </div>
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/92 via-black/75 to-transparent px-4 pt-10 pb-3.5">
+                    <div className="mb-1.5 flex items-center justify-between gap-2 text-[11px] text-[#F5F1E8]/90">
+                      <span>Shadow</span>
+                      <span className="font-mono tabular-nums text-[#9B968C]">
+                        S {heatmapAnalysis.shadowPercent}% · M {heatmapAnalysis.midtonePercent}% · H{' '}
+                        {heatmapAnalysis.highlightPercent}%
+                      </span>
+                      <span>Peak</span>
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      className="h-1.5 w-full rounded-full bg-[linear-gradient(to_right,#182260_0%,#284EA8_20%,#2E90A6_40%,#4EA67C_58%,#D4A853_76%,#E87236_90%,#E03A3A_100%)]"
+                    />
+                    <p className="mt-2 text-[11px] leading-relaxed text-[#F5F1E8]/90">
+                      {critique ? (
+                        <>
+                          <span className="font-semibold text-[#D4A853]">
+                            Suggested · {getStyleById(critique.recommendedStyleId).shortName}:
+                          </span>{' '}
+                          {critique.lightingAssessment}
+                        </>
+                      ) : (
+                        heatmapAnalysis.exposureSummary
+                      )}
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent px-4 pt-10 pb-4">
+                  <p className="text-xs text-[#F5F1E8]">
+                    Source frame loaded · Ready for {selectedStyle.name}
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         ) : (
@@ -441,6 +783,99 @@ export const ComparisonStage: React.FC<ComparisonStageProps> = ({
           </div>
         )}
       </div>
+
+      {/* Input Selfie Lighting Quality Meter (Dynamic Range & Shadow Harshness) */}
+      {lightingQuality && (
+        <div
+          aria-label={`Input selfie lighting quality: ${lightingQuality.rating}`}
+          className="mt-3 rounded-lg border border-white/[0.08] bg-[#141416] px-4 py-3"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+            <div className="flex flex-wrap items-center gap-2.5 text-xs">
+              <span className="font-semibold text-[#F5F1E8] whitespace-nowrap">
+                Lighting Quality
+              </span>
+              <span
+                aria-hidden="true"
+                className="inline-flex items-center gap-1"
+              >
+                {[1, 2, 3].map((level) => {
+                  const activeLevel =
+                    lightingQuality.rating === 'High'
+                      ? 3
+                      : lightingQuality.rating === 'Med'
+                        ? 2
+                        : 1;
+                  const isLit = level <= activeLevel;
+                  const litColor =
+                    lightingQuality.rating === 'High'
+                      ? 'bg-[#6CC091]'
+                      : lightingQuality.rating === 'Med'
+                        ? 'bg-[#D4A853]'
+                        : 'bg-[#E07A5F]';
+                  return (
+                    <span
+                      key={level}
+                      className={`h-1.5 w-3.5 rounded-[1px] ${
+                        isLit ? litColor : 'bg-white/[0.12]'
+                      }`}
+                    />
+                  );
+                })}
+              </span>
+              <span
+                className={`font-mono text-xs font-semibold uppercase tracking-wide whitespace-nowrap ${
+                  lightingQuality.rating === 'High'
+                    ? 'text-[#6CC091]'
+                    : lightingQuality.rating === 'Med'
+                      ? 'text-[#D4A853]'
+                      : 'text-[#E07A5F]'
+                }`}
+              >
+                {lightingQuality.rating}
+              </span>
+              <span aria-hidden="true" className="text-[#9B968C]">
+                ·
+              </span>
+              <span className="text-[#9B968C] whitespace-nowrap">
+                {lightingQuality.correctionLevel}
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-xs text-[#9B968C]">
+              <span className="whitespace-nowrap">
+                Dynamic Range{' '}
+                <span className="font-mono tabular-nums text-[#F5F1E8]">
+                  {lightingQuality.dynamicRangeScore}%
+                </span>
+              </span>
+              <span aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">
+                Shadows{' '}
+                <span className="font-mono tabular-nums text-[#F5F1E8]">
+                  {lightingQuality.shadowHarshnessLabel}
+                </span>
+              </span>
+              {beforeSourceUrl && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    onClick={handleToggleHeatmap}
+                    className="font-medium text-[#F5F1E8] underline decoration-[#D4A853]/60 underline-offset-4 transition-colors hover:text-[#D4A853] whitespace-nowrap cursor-pointer"
+                  >
+                    {isHeatmapActive ? 'Hide Light Map' : 'Inspect Light Map'}
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <p className="mt-1.5 text-xs leading-relaxed text-[#9B968C]">
+            {lightingQuality.correctionGuidance}
+          </p>
+        </div>
+      )}
 
       {/* Quiet Director Note under active frame */}
       {activeTake?.directorNote && (

@@ -1,5 +1,9 @@
 import JSZip from 'jszip';
-import type { GeneratedTake, SourcePortrait } from '../data/studioCatalog';
+import {
+  getAdvancedLightingPresetById,
+  type GeneratedTake,
+  type SourcePortrait,
+} from '../data/studioCatalog';
 import {
   injectExifIntoDataUrl,
   type PortraitExifMetadata,
@@ -210,37 +214,106 @@ export async function copyPortraitToClipboard(
   }
 }
 
-export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<void> {
-  if (takes.length === 0) return;
+function formatSignedMetric(value: number, decimals = 2): string {
+  const rounded = Number(value.toFixed(decimals));
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(decimals)}`;
+}
 
-  const zip = new JSZip();
+function formatPercentMetric(value: number): string {
+  return `${Math.round(value * 100)}%`;
+}
+
+export function buildGenerationSummaryText(
+  takes: GeneratedTake[],
+  mode: 'session' | 'batch'
+): string {
   const orderedTakes = [...takes].sort((a, b) => a.frameNumber - b.frameNumber);
-  const manifestLines: string[] = [
-    'Sable Studio — Session Contact Sheet',
-    `Exported Frames: ${orderedTakes.length}`,
+  const exportedAt = new Date().toISOString();
+  const title =
+    mode === 'batch'
+      ? 'Sable Studio — Batch Export Generation Summary'
+      : 'Sable Studio — Session Contact Sheet & Generation Summary';
+
+  const lines: string[] = [
+    title,
+    '='.repeat(title.length),
+    `Exported At: ${exportedAt}`,
+    `Exported Takes: ${orderedTakes.length}`,
     '',
   ];
 
   for (const take of orderedTakes) {
     const filename = buildPortraitFilename(take.frameNumber, take.styleName);
-    const { bytes } = injectExifIntoDataUrl(take.imageUrl, buildTakeExifMetadata(take));
-    zip.file(filename, bytes);
-
     const frameLabel = String(take.frameNumber).padStart(2, '0');
-    manifestLines.push(
-      `Frame ${frameLabel} · ${filename}`,
-      `  Style: ${take.styleName} | Attire: ${take.attireLabel} | Framing: ${take.framingLabel} | Lighting: ${take.lightingLabel} | Aspect: ${take.aspectRatio}`
+    const capturedAt = new Date(take.createdAt).toISOString();
+    const advancedPreset = getAdvancedLightingPresetById(take.recipe.advancedLightingPreset);
+
+    lines.push(
+      `Take ${frameLabel} · ${filename}`,
+      `  Captured At: ${capturedAt}`,
+      `  Style / Backdrop: ${take.styleName} (${take.recipe.styleId})`,
+      `  Wardrobe Tone: ${take.attireLabel} (${take.recipe.attireId})`,
+      `  Lens Framing: ${take.framingLabel} (${take.recipe.framingId}) | Smart Crop: ${
+        take.recipe.smartCrop ? 'On' : 'Off'
+      }`,
+      `  Lighting Setup: ${take.lightingLabel} (${take.recipe.lightingId}) | Advanced Lighting: ${advancedPreset.label}`,
+      `  Aspect Ratio: ${take.aspectRatio}`,
+      `  Tonal Calibration: Exposure ${formatSignedMetric(take.recipe.exposure)}, Contrast ${formatSignedMetric(
+        take.recipe.contrast
+      )}, Warmth ${formatSignedMetric(take.recipe.warmth)}, Saturation ${formatSignedMetric(
+        take.recipe.saturation
+      )}, Monochrome ${take.recipe.monochrome ? 'Yes' : 'No'}`,
+      `  Optics & Finish: Backdrop Blur ${take.recipe.backdropBlur.toFixed(
+        1
+      )}px, Vignette ${formatPercentMetric(take.recipe.vignette)}, Rim Light ${formatPercentMetric(
+        take.recipe.rimLight
+      )}, Key Light ${formatPercentMetric(
+        take.recipe.keyLightStrength
+      )}, Grain ${formatPercentMetric(take.recipe.grain)}, Sharpen ${formatPercentMetric(
+        take.recipe.sharpen ?? 0
+      )}`,
+      `  Crop & Alignment: Zoom ${take.recipe.zoomAdjust.toFixed(
+        2
+      )}x, Vertical Offset ${formatSignedMetric(
+        take.recipe.verticalOffset,
+        3
+      )} | Face Anchor X=${formatPercentMetric(
+        take.anchor.faceCenterX
+      )}, Eye Line Y=${formatPercentMetric(
+        take.anchor.faceCenterY
+      )}, Face Scale=${formatPercentMetric(take.anchor.faceHeightRatio)}`
     );
+
     if (take.retouchPrompt) {
-      manifestLines.push(`  Retouch Prompt: ${take.retouchPrompt}`);
+      lines.push(`  Retouch Prompt: ${take.retouchPrompt}`);
     }
     if (take.directorNote) {
-      manifestLines.push(`  Darkroom Note: ${take.directorNote}`);
+      lines.push(`  Darkroom Note: ${take.directorNote}`);
     }
-    manifestLines.push('');
+    lines.push('');
   }
 
-  zip.file('contact-sheet-notes.txt', manifestLines.join('\n'));
+  return lines.join('\n');
+}
+
+async function bundleAndDownloadPortraitsZip(
+  takes: GeneratedTake[],
+  mode: 'session' | 'batch'
+): Promise<void> {
+  if (takes.length === 0) return;
+
+  const zip = new JSZip();
+  const orderedTakes = [...takes].sort((a, b) => a.frameNumber - b.frameNumber);
+
+  for (const take of orderedTakes) {
+    const filename = buildPortraitFilename(take.frameNumber, take.styleName);
+    const { bytes } = injectExifIntoDataUrl(take.imageUrl, buildTakeExifMetadata(take));
+    zip.file(filename, bytes);
+  }
+
+  const summaryFilename =
+    mode === 'batch' ? 'generation-parameters-summary.txt' : 'contact-sheet-notes.txt';
+  zip.file(summaryFilename, buildGenerationSummaryText(orderedTakes, mode));
 
   const blob = await zip.generateAsync({
     type: 'blob',
@@ -251,9 +324,16 @@ export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<v
   const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = objectUrl;
-  link.download = `sable-studio-session-${orderedTakes.length}-${
-    orderedTakes.length === 1 ? 'frame' : 'frames'
-  }.zip`;
+  const archiveBase = mode === 'batch' ? 'sable-studio-batch' : 'sable-studio-session';
+  const unit =
+    mode === 'batch'
+      ? orderedTakes.length === 1
+        ? 'take'
+        : 'takes'
+      : orderedTakes.length === 1
+        ? 'frame'
+        : 'frames';
+  link.download = `${archiveBase}-${orderedTakes.length}-${unit}.zip`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -261,4 +341,12 @@ export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<v
   window.setTimeout(() => {
     URL.revokeObjectURL(objectUrl);
   }, 5000);
+}
+
+export async function downloadAllPortraitsZip(takes: GeneratedTake[]): Promise<void> {
+  await bundleAndDownloadPortraitsZip(takes, 'session');
+}
+
+export async function downloadBatchPortraitsZip(takes: GeneratedTake[]): Promise<void> {
+  await bundleAndDownloadPortraitsZip(takes, 'batch');
 }

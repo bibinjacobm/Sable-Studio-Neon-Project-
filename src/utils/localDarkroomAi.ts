@@ -448,10 +448,11 @@ export function applyRetouchLocally(
     next.lightingId = 'rembrandt';
     notes.push('deeper sculptural contrast');
   }
-  if (lower.includes('soft') || lower.includes('gentle')) {
+  if (lower.includes('soft') || lower.includes('gentle') || lower.includes('skin texture') || lower.includes('smooth')) {
     next.contrast = Math.max(-0.12, next.contrast - 0.06);
     next.keyLightStrength = Math.max(0.25, next.keyLightStrength - 0.12);
-    notes.push('softer shadow rolloff');
+    next.sharpen = 0;
+    notes.push('softer skin & shadow rolloff');
   }
   if (lower.includes('warm') || lower.includes('golden') || lower.includes('sunset')) {
     next.warmth = Math.min(0.28, next.warmth + 0.1);
@@ -463,9 +464,10 @@ export function applyRetouchLocally(
     next.warmth = Math.max(-0.25, next.warmth - 0.09);
     notes.push('cooler architectural balance');
   }
-  if (lower.includes('blur') || lower.includes('bokeh')) {
+  if (lower.includes('blur') || lower.includes('bokeh') || lower.includes('depth')) {
     next.backdropBlur = Math.min(16, next.backdropBlur + 4);
-    notes.push('softer backdrop bokeh');
+    next.vignette = Math.min(0.62, next.vignette + 0.06);
+    notes.push('deeper background bokeh');
   }
   if (lower.includes('tight') || lower.includes('closer') || lower.includes('zoom in') || lower.includes('85mm')) {
     next.framingId = 'tight-headshot';

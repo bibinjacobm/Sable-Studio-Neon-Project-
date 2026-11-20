@@ -88,6 +88,11 @@ export default function App() {
   const [generationPhase, setGenerationPhase] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
   const [isSharpening, setIsSharpening] = useState<boolean>(false);
+  const [isSuggestingRetouches, setIsSuggestingRetouches] = useState<boolean>(false);
+  const [suggestRetouchError, setSuggestRetouchError] = useState<string | null>(null);
+  const [autoSuggestionsByTakeId, setAutoSuggestionsByTakeId] = useState<
+    Record<string, string[]>
+  >({});
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState<boolean>(false);
@@ -427,8 +432,70 @@ export default function App() {
     }
   };
 
+  const handleAutoSuggestRetouches = async () => {
+    if (!activeTake || isGenerating || isSuggestingRetouches) return;
+    const targetTakeId = activeTake.id;
+    const previousSuggestions = autoSuggestionsByTakeId[targetTakeId] ?? [];
+
+    setSuggestRetouchError(null);
+    setIsSuggestingRetouches(true);
+    try {
+      const response = await fetch('/api/headshots/suggest-retouches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          styleName: activeTake.styleName,
+          attireLabel: activeTake.attireLabel,
+          framingLabel: activeTake.framingLabel,
+          lightingLabel: activeTake.lightingLabel,
+          aspectRatio: activeTake.aspectRatio,
+          recipe: activeTake.recipe,
+          retouchPrompt: activeTake.retouchPrompt,
+          directorNote: activeTake.directorNote,
+          previousSuggestions,
+        }),
+      });
+
+      const contentType = response.headers.get('content-type') ?? '';
+      if (!contentType.toLowerCase().includes('application/json')) {
+        throw new Error(
+          'AI Auto-Suggest requires the studio server API and is unavailable in static-only preview.'
+        );
+      }
+
+      const payload = (await response.json()) as {
+        suggestions?: string[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(
+          payload.error || 'Unable to generate retouching suggestions right now.'
+        );
+      }
+
+      if (!Array.isArray(payload.suggestions) || payload.suggestions.length === 0) {
+        throw new Error('No retouching suggestions were returned. Try again.');
+      }
+
+      setAutoSuggestionsByTakeId((prev) => ({
+        ...prev,
+        [targetTakeId]: payload.suggestions!,
+      }));
+    } catch (err) {
+      setSuggestRetouchError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to generate retouching suggestions right now.'
+      );
+    } finally {
+      setIsSuggestingRetouches(false);
+    }
+  };
+
   const handleSelectTake = (id: string) => {
     setActiveTakeId(id);
+    setSuggestRetouchError(null);
     const found = takes.find((t) => t.id === id);
     if (found) {
       setCompareMode('after');
@@ -644,6 +711,7 @@ export default function App() {
               sourcePortrait={sourcePortrait}
               activeTake={activeTake}
               selectedStyle={selectedStyle}
+              critique={critique}
               compareMode={compareMode}
               sliderPosition={sliderPosition}
               isGenerating={isGenerating}
@@ -667,10 +735,14 @@ export default function App() {
               critique={critique}
               promptValue={retouchPrompt}
               sharpenIntensity={activeTake?.recipe.sharpen ?? 0}
+              autoSuggestions={activeTake ? autoSuggestionsByTakeId[activeTake.id] ?? [] : []}
               isGenerating={isGenerating}
               isSharpening={isSharpening}
+              isSuggesting={isSuggestingRetouches}
+              suggestError={suggestRetouchError}
               onPromptChange={setRetouchPrompt}
               onSubmitPrompt={(custom) => void handleApplyRetouch(custom)}
+              onAutoSuggest={() => void handleAutoSuggestRetouches()}
               onSharpenChange={handleSharpenChange}
             />
           </div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { ArrowRight, RotateCcw } from 'lucide-react';
+import { ArrowRight, Loader2, RotateCcw, Sparkles } from 'lucide-react';
 import {
   RETOUCH_QUICK_CUES,
   type GeneratedTake,
@@ -11,10 +11,14 @@ interface RetouchPromptBarProps {
   critique: SelfieCritique | null;
   promptValue: string;
   sharpenIntensity: number;
+  autoSuggestions: string[];
   isGenerating: boolean;
   isSharpening: boolean;
+  isSuggesting: boolean;
+  suggestError: string | null;
   onPromptChange: (value: string) => void;
   onSubmitPrompt: (customPrompt?: string) => void;
+  onAutoSuggest: () => void;
   onSharpenChange: (intensity: number) => void;
 }
 
@@ -23,17 +27,23 @@ export const RetouchPromptBar: React.FC<RetouchPromptBarProps> = ({
   critique,
   promptValue,
   sharpenIntensity,
+  autoSuggestions,
   isGenerating,
   isSharpening,
+  isSuggesting,
+  suggestError,
   onPromptChange,
   onSubmitPrompt,
+  onAutoSuggest,
   onSharpenChange,
 }) => {
   const isDisabled = isGenerating || !activeTake;
   const sharpenPercent = Math.round(Math.max(0, Math.min(1, sharpenIntensity)) * 100);
+  const hasAutoSuggestions = autoSuggestions.length > 0;
 
-  const suggestions =
-    critique && critique.retouchIdeas.length > 0
+  const suggestions = hasAutoSuggestions
+    ? autoSuggestions
+    : critique && critique.retouchIdeas.length > 0
       ? [...critique.retouchIdeas, ...RETOUCH_QUICK_CUES.slice(0, 3)]
       : RETOUCH_QUICK_CUES.slice(0, 4);
 
@@ -57,7 +67,7 @@ export const RetouchPromptBar: React.FC<RetouchPromptBarProps> = ({
         </span>
       </div>
 
-      <form onSubmit={handleFormSubmit} className="flex flex-col gap-3 sm:flex-row">
+      <form onSubmit={handleFormSubmit} className="flex flex-col gap-2.5 sm:flex-row">
         <label htmlFor="studio-retouch-input" className="sr-only">
           Describe your retouching adjustment
         </label>
@@ -67,22 +77,52 @@ export const RetouchPromptBar: React.FC<RetouchPromptBarProps> = ({
           value={promptValue}
           onChange={(e) => onPromptChange(e.target.value)}
           disabled={isDisabled}
-          placeholder="e.g., Convert to dramatic monochrome, add warm golden rim light, or switch to Modern Tech Office..."
+          placeholder="e.g., Soften skin texture, increase background depth, or add warm rim light..."
           className="min-h-[44px] flex-1 rounded-md border border-white/[0.1] bg-[#0B0B0C] px-3.5 py-2.5 text-sm text-[#F5F1E8] placeholder:text-[#9B968C]/70 transition-colors duration-150 focus:border-[#D4A853] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
-        <button
-          type="submit"
-          disabled={isDisabled || !promptValue.trim()}
-          className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-2.5 text-sm font-semibold text-[#0B0B0C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-[#9B968C] cursor-pointer"
-        >
-          <span>Apply Retouch</span>
-          <ArrowRight className="h-4 w-4 shrink-0" aria-hidden="true" />
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onAutoSuggest}
+            disabled={isDisabled || isSuggesting}
+            title="Generate context-aware retouching suggestions based on this portrait's style settings"
+            className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-1.5 rounded-md border border-[#D4A853]/45 bg-[#0B0B0C] px-3.5 py-2.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+          >
+            {isSuggesting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-[#D4A853] shrink-0" aria-hidden="true" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+            )}
+            <span>{isSuggesting ? 'Suggesting...' : 'Auto-Suggest'}</span>
+          </button>
+          <button
+            type="submit"
+            disabled={isDisabled || !promptValue.trim()}
+            className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-2.5 text-sm font-semibold text-[#0B0B0C] whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-[#9B968C] cursor-pointer"
+          >
+            <span>Apply Retouch</span>
+            <ArrowRight className="h-4 w-4 shrink-0" aria-hidden="true" />
+          </button>
+        </div>
       </form>
 
-      {/* Quick clickable cue buttons */}
+      {suggestError && (
+        <p role="alert" className="mt-2.5 text-xs text-amber-300">
+          {suggestError}
+        </p>
+      )}
+
+      {/* Quick clickable cue buttons (context-aware AI suggestions when generated) */}
       <div className="mt-3.5 flex flex-wrap items-center gap-2">
-        <span className="mr-1 text-xs text-[#9B968C]">Quick cues:</span>
+        <span className="mr-1 text-xs text-[#9B968C] whitespace-nowrap">
+          {hasAutoSuggestions && activeTake ? (
+            <span className="font-medium text-[#D4A853]">
+              Suggested for Frame {String(activeTake.frameNumber).padStart(2, '0')}:
+            </span>
+          ) : (
+            'Quick cues:'
+          )}
+        </span>
         {suggestions.map((cue) => (
           <button
             key={cue}
@@ -94,7 +134,11 @@ export const RetouchPromptBar: React.FC<RetouchPromptBarProps> = ({
                 onSubmitPrompt(cue);
               }
             }}
-            className="max-w-full truncate rounded-md border border-white/[0.08] bg-[#1C1C1F] px-2.5 py-1.5 text-left text-xs text-[#F5F1E8]/85 transition-colors duration-150 hover:border-[#D4A853]/60 hover:text-[#F5F1E8] disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer"
+            className={`max-w-full truncate rounded-md border px-2.5 py-1.5 text-left text-xs transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-45 cursor-pointer ${
+              hasAutoSuggestions
+                ? 'border-[#D4A853]/35 bg-[#0B0B0C] text-[#F5F1E8] hover:border-[#D4A853] hover:bg-[#1C1C1F]'
+                : 'border-white/[0.08] bg-[#1C1C1F] text-[#F5F1E8]/85 hover:border-[#D4A853]/60 hover:text-[#F5F1E8]'
+            }`}
           >
             {cue}
           </button>

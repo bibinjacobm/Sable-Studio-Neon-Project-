@@ -1,9 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Archive,
   ArrowDownUp,
   Camera,
   Check,
+  CheckSquare,
   ChevronLeft,
   ChevronRight,
   Download,
@@ -11,9 +12,13 @@ import {
   History,
   SlidersHorizontal,
   Trash2,
+  X,
 } from 'lucide-react';
 import type { GeneratedTake } from '../data/studioCatalog';
-import { downloadAllPortraitsZip } from '../utils/imageProcessing';
+import {
+  downloadAllPortraitsZip,
+  downloadBatchPortraitsZip,
+} from '../utils/imageProcessing';
 
 type HistoryFilter = 'all' | 'retouched';
 type HistorySortOrder = 'newest' | 'oldest';
@@ -55,25 +60,36 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
   const [filter, setFilter] = useState<HistoryFilter>('all');
   const [sortOrder, setSortOrder] = useState<HistorySortOrder>('newest');
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [isExportingZip, setIsExportingZip] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [exportSuccess, setExportSuccess] = useState<string | null>(null);
 
-  const handleDownloadAll = async () => {
-    if (takes.length === 0 || isExportingZip) return;
-    setExportError(null);
-    setIsExportingZip(true);
-    try {
-      await downloadAllPortraitsZip(takes);
-    } catch (err) {
-      setExportError(
-        err instanceof Error
-          ? err.message
-          : 'Unable to create compressed ZIP archive. Please try again.'
-      );
-    } finally {
-      setIsExportingZip(false);
+  const takeIdSet = useMemo(() => new Set(takes.map((take) => take.id)), [takes]);
+
+  const validSelectedIdSet = useMemo(
+    () => new Set(selectedIds.filter((id) => takeIdSet.has(id))),
+    [selectedIds, takeIdSet]
+  );
+
+  const selectedTakes = useMemo(
+    () => takes.filter((take) => validSelectedIdSet.has(take.id)),
+    [takes, validSelectedIdSet]
+  );
+
+  useEffect(() => {
+    if (takes.length === 0 && isBatchMode) {
+      setIsBatchMode(false);
+      setSelectedIds([]);
     }
-  };
+  }, [takes.length, isBatchMode]);
+
+  useEffect(() => {
+    if (!exportSuccess) return;
+    const timer = window.setTimeout(() => setExportSuccess(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [exportSuccess]);
 
   const retouchedCount = useMemo(
     () => takes.filter((take) => Boolean(take.retouchPrompt)).length,
@@ -93,6 +109,97 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
     [visibleTakes, activeTakeId]
   );
 
+  const allVisibleSelected = useMemo(
+    () =>
+      visibleTakes.length > 0 && visibleTakes.every((take) => validSelectedIdSet.has(take.id)),
+    [visibleTakes, validSelectedIdSet]
+  );
+
+  const handleToggleBatchMode = () => {
+    setExportError(null);
+    setExportSuccess(null);
+    setIsBatchMode((prev) => {
+      const next = !prev;
+      if (!next) {
+        setSelectedIds([]);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleSelectTake = (id: string) => {
+    setExportError(null);
+    setExportSuccess(null);
+    setSelectedIds((prev) => {
+      const cleaned = prev.filter((itemId) => takeIdSet.has(itemId));
+      return cleaned.includes(id)
+        ? cleaned.filter((itemId) => itemId !== id)
+        : [...cleaned, id];
+    });
+  };
+
+  const handleSelectAllVisible = () => {
+    setExportError(null);
+    setExportSuccess(null);
+    setSelectedIds((prev) => {
+      const merged = new Set(prev.filter((id) => takeIdSet.has(id)));
+      for (const take of visibleTakes) {
+        merged.add(take.id);
+      }
+      return Array.from(merged);
+    });
+  };
+
+  const handleClearSelection = () => {
+    setExportError(null);
+    setExportSuccess(null);
+    setSelectedIds([]);
+  };
+
+  const handleDownloadAll = async () => {
+    if (takes.length === 0 || isExportingZip) return;
+    setExportError(null);
+    setExportSuccess(null);
+    setIsExportingZip(true);
+    try {
+      await downloadAllPortraitsZip(takes);
+      setExportSuccess(
+        `Exported all ${takes.length} ${takes.length === 1 ? 'take' : 'takes'} with summary notes.`
+      );
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to create compressed ZIP archive. Please try again.'
+      );
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
+
+  const handleExportBatch = async () => {
+    if (selectedTakes.length === 0 || isExportingZip) return;
+    setExportError(null);
+    setExportSuccess(null);
+    setIsExportingZip(true);
+    try {
+      await downloadBatchPortraitsZip(selectedTakes);
+      setExportSuccess(
+        `Bundled ${selectedTakes.length} ${
+          selectedTakes.length === 1 ? 'take' : 'takes'
+        } + generation parameters summary.`
+      );
+    } catch (err) {
+      setExportError(
+        err instanceof Error
+          ? err.message
+          : 'Unable to bundle selected takes into a ZIP archive. Please try again.'
+      );
+    } finally {
+      setIsExportingZip(false);
+    }
+  };
+
   const handleStepTake = (delta: -1 | 1) => {
     if (visibleTakes.length === 0) return;
     if (activeVisibleIndex === -1) {
@@ -107,7 +214,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
     <div className="flex flex-col gap-5">
       {/* Panel Header */}
       <div className="border-b border-white/[0.07] pb-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
           <div className="flex items-baseline gap-2.5">
             <h2 className="font-serif text-2xl font-semibold text-[#F5F1E8]">Session History</h2>
             <span className="font-mono text-xs tabular-nums text-[#9B968C] whitespace-nowrap shrink-0">
@@ -116,25 +223,62 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
           </div>
 
           {takes.length > 0 && (
-            <button
-              type="button"
-              onClick={() => void handleDownloadAll()}
-              disabled={isExportingZip}
-              aria-label={`Download all ${takes.length} session takes as a compressed ZIP archive`}
-              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-[#D4A853]/50 bg-[#0B0B0C] px-3 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
-            >
-              <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
-              <span>{isExportingZip ? 'Compressing...' : 'Download All'}</span>
-            </button>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleToggleBatchMode}
+                aria-pressed={isBatchMode}
+                className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-semibold whitespace-nowrap shrink-0 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer ${
+                  isBatchMode
+                    ? 'border-[#D4A853] bg-[#D4A853]/15 text-[#F5F1E8]'
+                    : 'border-white/[0.12] bg-[#0B0B0C] text-[#F5F1E8] hover:border-white/25 hover:bg-[#1C1C1F]'
+                }`}
+              >
+                {isBatchMode ? (
+                  <>
+                    <X className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                    <span>Exit Batch</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckSquare
+                      className="h-3.5 w-3.5 text-[#D4A853] shrink-0"
+                      aria-hidden="true"
+                    />
+                    <span>Batch Export</span>
+                  </>
+                )}
+              </button>
+
+              {!isBatchMode && (
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadAll()}
+                  disabled={isExportingZip}
+                  aria-label={`Download all ${takes.length} session takes as a compressed ZIP archive`}
+                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-md border border-[#D4A853]/50 bg-[#0B0B0C] px-2.5 py-1.5 text-xs font-semibold text-[#F5F1E8] whitespace-nowrap shrink-0 transition-colors duration-150 hover:border-[#D4A853] hover:bg-[#1C1C1F] disabled:cursor-not-allowed disabled:opacity-55 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                >
+                  <Archive className="h-3.5 w-3.5 text-[#D4A853] shrink-0" aria-hidden="true" />
+                  <span>{isExportingZip ? 'Compressing...' : 'Download All'}</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
-        <p className="mt-0.5 text-xs text-[#9B968C]">
-          Click any generated headshot to toggle it immediately on the portrait stage
+        <p className="mt-1 text-xs text-[#9B968C]">
+          {isBatchMode
+            ? 'Select takes below to package into one ZIP with a generation parameters summary'
+            : 'Click any generated headshot to toggle it immediately on the portrait stage'}
         </p>
 
         {exportError && (
           <p role="alert" className="mt-2.5 text-xs text-amber-300">
             {exportError}
+          </p>
+        )}
+        {exportSuccess && !exportError && (
+          <p role="status" className="mt-2.5 text-xs text-[#D4A853]">
+            {exportSuccess}
           </p>
         )}
       </div>
@@ -173,6 +317,60 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
         </div>
       ) : (
         <>
+          {/* Batch Export Selection & Bundle Bar */}
+          {isBatchMode && (
+            <div className="flex flex-col gap-3 rounded-lg border border-[#D4A853]/35 bg-[#0B0B0C]/90 p-3.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-mono font-medium tabular-nums text-[#F5F1E8]">
+                    {selectedTakes.length} of {takes.length} selected
+                  </span>
+                  <span aria-hidden="true" className="text-[#9B968C]">
+                    ·
+                  </span>
+                  <span className="text-[#9B968C]">Includes parameter summary .txt</span>
+                </div>
+
+                <div className="flex items-center gap-3 text-xs">
+                  <button
+                    type="button"
+                    onClick={handleSelectAllVisible}
+                    disabled={visibleTakes.length === 0 || allVisibleSelected}
+                    className="font-medium text-[#F5F1E8] underline decoration-[#D4A853]/60 underline-offset-4 transition-colors hover:text-[#D4A853] disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap cursor-pointer"
+                  >
+                    {filter === 'retouched' ? 'Select Visible' : 'Select All'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleClearSelection}
+                    disabled={selectedTakes.length === 0}
+                    className="font-medium text-[#9B968C] transition-colors hover:text-[#F5F1E8] disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap cursor-pointer"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => void handleExportBatch()}
+                disabled={selectedTakes.length === 0 || isExportingZip}
+                className="inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-4 py-2 text-xs font-semibold text-[#0B0B0C] whitespace-nowrap transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/12 disabled:text-[#9B968C] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+              >
+                <Archive className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  {isExportingZip
+                    ? 'Bundling ZIP Archive...'
+                    : selectedTakes.length > 0
+                      ? `Download ZIP (${selectedTakes.length} ${
+                          selectedTakes.length === 1 ? 'Take' : 'Takes'
+                        })`
+                      : 'Select Takes to Export ZIP'}
+                </span>
+              </button>
+            </div>
+          )}
+
           {/* Filter, Sort & Quick Take Stepper Toolbar */}
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <div
@@ -221,7 +419,7 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                 <span>{sortOrder === 'newest' ? 'Newest' : 'Oldest'}</span>
               </button>
 
-              {visibleTakes.length > 1 && (
+              {!isBatchMode && visibleTakes.length > 1 && (
                 <div
                   role="group"
                   aria-label="Step between takes"
@@ -267,24 +465,38 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
             <div className="grid max-h-[600px] grid-cols-2 gap-3 overflow-y-auto pr-1">
               {visibleTakes.map((take) => {
                 const isActive = take.id === activeTakeId;
+                const isSelected = validSelectedIdSet.has(take.id);
                 const imgFailed = failedImages[take.id];
                 const frameLabel = String(take.frameNumber).padStart(2, '0');
                 const timeLabel = formatTakeTime(take.createdAt);
+                const isHighlighted = isBatchMode ? isSelected : isActive;
 
                 return (
                   <article
                     key={take.id}
                     className={`group flex flex-col overflow-hidden rounded-lg border transition-colors duration-150 ${
-                      isActive
-                        ? 'border-[#D4A853] bg-[#18181B] ring-1 ring-[#D4A853]/40'
+                      isHighlighted
+                        ? 'border-[#D4A853] bg-[#18181B] ring-1 ring-[#D4A853]/45'
                         : 'border-white/[0.08] bg-[#0B0B0C] hover:border-white/25'
                     }`}
                   >
                     <button
                       type="button"
-                      onClick={() => onSelectTake(take.id)}
-                      aria-pressed={isActive}
-                      aria-label={`Select take ${frameLabel}, ${take.styleName}${isActive ? ' (currently active)' : ''}`}
+                      role={isBatchMode ? 'checkbox' : undefined}
+                      aria-checked={isBatchMode ? isSelected : undefined}
+                      aria-pressed={!isBatchMode ? isActive : undefined}
+                      onClick={() =>
+                        isBatchMode ? handleToggleSelectTake(take.id) : onSelectTake(take.id)
+                      }
+                      aria-label={
+                        isBatchMode
+                          ? `${isSelected ? 'Deselect' : 'Select'} take ${frameLabel}, ${
+                              take.styleName
+                            } for batch ZIP export`
+                          : `Select take ${frameLabel}, ${take.styleName}${
+                              isActive ? ' (currently active)' : ''
+                            }`
+                      }
                       className="relative aspect-[3/4] w-full overflow-hidden bg-[#111113] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#D4A853] cursor-pointer"
                     >
                       {!imgFailed ? (
@@ -304,16 +516,36 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                         </div>
                       )}
 
-                      {/* Top Contrast Scrim: Frame index + Active indicator */}
+                      {/* Top Contrast Scrim: Frame index + Selection / Active indicator */}
                       <div className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-between bg-gradient-to-b from-black/80 via-black/35 to-transparent px-2.5 pt-2 pb-6">
                         <span className="font-mono text-xs font-medium tabular-nums text-[#F5F1E8]">
                           Take {frameLabel}
                         </span>
-                        {isActive && (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#D4A853]">
-                            <Check className="h-3 w-3 stroke-[2.5]" aria-hidden="true" />
-                            <span>Active</span>
+                        {isBatchMode ? (
+                          <span className="inline-flex items-center gap-1.5">
+                            {isSelected && (
+                              <span className="text-[11px] font-semibold text-[#D4A853]">
+                                Selected
+                              </span>
+                            )}
+                            <span
+                              aria-hidden="true"
+                              className={`flex h-4 w-4 items-center justify-center rounded-[4px] border transition-colors duration-150 ${
+                                isSelected
+                                  ? 'border-[#D4A853] bg-[#D4A853] text-[#0B0B0C]'
+                                  : 'border-white/50 bg-black/55 text-transparent'
+                              }`}
+                            >
+                              <Check className="h-3 w-3 stroke-[3]" />
+                            </span>
                           </span>
+                        ) : (
+                          isActive && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#D4A853]">
+                              <Check className="h-3 w-3 stroke-[2.5]" aria-hidden="true" />
+                              <span>Active</span>
+                            </span>
+                          )
                         )}
                       </div>
 
@@ -349,6 +581,12 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                           <span className="font-mono tabular-nums">{take.aspectRatio}</span>
                           <span aria-hidden="true"> · </span>
                           <span>{take.lightingLabel}</span>
+                          {isBatchMode && isActive && (
+                            <>
+                              <span aria-hidden="true"> · </span>
+                              <span className="text-[#D4A853]">On stage</span>
+                            </>
+                          )}
                         </p>
                       </div>
 
@@ -361,22 +599,26 @@ export const HistoryViewPanel: React.FC<HistoryViewPanelProps> = ({
                         >
                           <Expand className="h-3.5 w-3.5" aria-hidden="true" />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => onDownloadTake(take)}
-                          aria-label={`Download take ${frameLabel}`}
-                          className="flex h-7 w-7 items-center justify-center rounded text-[#9B968C] transition-colors hover:bg-white/[0.06] hover:text-[#F5F1E8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
-                        >
-                          <Download className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => onRemoveTake(take.id)}
-                          aria-label={`Remove take ${frameLabel}`}
-                          className="flex h-7 w-7 items-center justify-center rounded text-[#9B968C] transition-colors hover:bg-white/[0.06] hover:text-[#F5F1E8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                        </button>
+                        {!isBatchMode && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onDownloadTake(take)}
+                              aria-label={`Download take ${frameLabel}`}
+                              className="flex h-7 w-7 items-center justify-center rounded text-[#9B968C] transition-colors hover:bg-white/[0.06] hover:text-[#F5F1E8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                            >
+                              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onRemoveTake(take.id)}
+                              aria-label={`Remove take ${frameLabel}`}
+                              className="flex h-7 w-7 items-center justify-center rounded text-[#9B968C] transition-colors hover:bg-white/[0.06] hover:text-[#F5F1E8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D4A853] cursor-pointer"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </article>

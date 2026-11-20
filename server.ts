@@ -487,9 +487,10 @@ function applyHeuristicRetouch(prompt: string, current: DarkroomRecipe): Darkroo
     next.vignette = Math.min(0.65, next.vignette + 0.12);
     next.lightingId = 'rembrandt';
   }
-  if (lower.includes('soft') || lower.includes('gentle')) {
+  if (lower.includes('soft') || lower.includes('gentle') || lower.includes('skin texture') || lower.includes('smooth')) {
     next.contrast = Math.max(-0.15, next.contrast - 0.07);
     next.keyLightStrength = Math.max(0.25, next.keyLightStrength - 0.15);
+    next.sharpen = 0;
   }
   if (lower.includes('warm') || lower.includes('golden') || lower.includes('sunset')) {
     next.warmth = Math.min(0.32, next.warmth + 0.12);
@@ -499,8 +500,9 @@ function applyHeuristicRetouch(prompt: string, current: DarkroomRecipe): Darkroo
   if (lower.includes('cool') || lower.includes('crisp')) {
     next.warmth = Math.max(-0.28, next.warmth - 0.1);
   }
-  if (lower.includes('blur') || lower.includes('bokeh')) {
+  if (lower.includes('blur') || lower.includes('bokeh') || lower.includes('depth')) {
     next.backdropBlur = Math.min(16, next.backdropBlur + 4);
+    next.vignette = Math.min(0.62, next.vignette + 0.06);
   }
   if (lower.includes('tight') || lower.includes('closer') || lower.includes('zoom in')) {
     next.framingId = 'tight-headshot';
@@ -664,6 +666,134 @@ Keep the critique concise, encouraging, and grounded in real portrait photograph
       ],
     });
   }
+});
+
+/**
+ * Lightweight Free-Tier Retouch Suggestion Generator (`gemini-4-hydrogen`, ThinkingLevel.LOW)
+ * Generates context-aware retouching suggestions tailored to the active portrait's style settings.
+ */
+app.post('/api/headshots/suggest-retouches', async (req, res) => {
+  const {
+    styleName,
+    attireLabel,
+    framingLabel,
+    lightingLabel,
+    aspectRatio,
+    recipe,
+    retouchPrompt,
+    directorNote,
+    previousSuggestions,
+  } = req.body ?? {};
+
+  const ai = createGeminiClient();
+  if (!ai) {
+    res.status(503).json({
+      error:
+        'Gemini API key is not configured in Settings > Secrets. Add a Gemini API key to use AI Auto-Suggest.',
+    });
+    return;
+  }
+
+  const safeStyle = getStyleById(recipe?.styleId);
+  const safeAttire = getAttireById(recipe?.attireId);
+  const safeFraming = getFramingById(recipe?.framingId);
+  const safeLighting = getLightingById(recipe?.lightingId);
+  const safeAdvancedPreset = getAdvancedLightingPresetById(recipe?.advancedLightingPreset);
+
+  const avoidList = Array.isArray(previousSuggestions)
+    ? previousSuggestions
+        .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        .slice(0, 8)
+    : [];
+
+  const promptText = `You are a veteran editorial portrait retoucher inside Sable Studio.
+Suggest 4 concise, actionable, studio-authentic retouching instructions tailored to this portrait's current settings.
+
+Current portrait configuration:
+- Backdrop / Style: ${typeof styleName === 'string' && styleName.trim() ? styleName : safeStyle.name}
+- Wardrobe Tone: ${typeof attireLabel === 'string' && attireLabel.trim() ? attireLabel : safeAttire.label}
+- Lens Framing: ${typeof framingLabel === 'string' && framingLabel.trim() ? framingLabel : safeFraming.label} (${recipe?.smartCrop ? 'Smart Crop On' : 'Manual Crop'})
+- Lighting Setup: ${typeof lightingLabel === 'string' && lightingLabel.trim() ? lightingLabel : safeLighting.label}
+- Advanced Lighting Preset: ${safeAdvancedPreset.label}
+- Aspect Ratio: ${normalizeAspectRatio(aspectRatio ?? recipe?.aspectRatio)}
+- Tonal Recipe: monochrome=${Boolean(recipe?.monochrome)}, exposure=${typeof recipe?.exposure === 'number' ? recipe.exposure.toFixed(2) : '0.04'}, contrast=${typeof recipe?.contrast === 'number' ? recipe.contrast.toFixed(2) : '0.10'}, warmth=${typeof recipe?.warmth === 'number' ? recipe.warmth.toFixed(2) : '0.00'}, backdropBlur=${typeof recipe?.backdropBlur === 'number' ? recipe.backdropBlur : 6}px, rimLight=${typeof recipe?.rimLight === 'number' ? recipe.rimLight.toFixed(2) : '0.45'}, vignette=${typeof recipe?.vignette === 'number' ? recipe.vignette.toFixed(2) : '0.30'}, sharpen=${typeof recipe?.sharpen === 'number' ? recipe.sharpen.toFixed(2) : '0.00'}
+${typeof retouchPrompt === 'string' && retouchPrompt.trim() ? `- Last Retouch Applied: "${retouchPrompt.trim()}"` : ''}
+${typeof directorNote === 'string' && directorNote.trim() ? `- Darkroom Note: "${directorNote.trim()}"` : ''}
+${avoidList.length > 0 ? `- Avoid repeating these previous suggestions: ${avoidList.map((s) => `"${s}"`).join(', ')}` : ''}
+
+Requirements:
+- Return exactly 4 distinct suggestions, each 3 to 8 words long, written as direct retouching commands (e.g., "Soften skin texture and shadow rolloff", "Increase background depth and bokeh", "Add warm golden rim separation", "Tighten crop to 85mm close-up").
+- Tailor every suggestion to complement or elevate the current style, lighting, and recipe (do not suggest monochrome if monochrome is already true; do not suggest the exact current backdrop).
+- Keep every suggestion realistic for darkroom lighting, tonal contrast, skin/shadow softness, bokeh depth, rim light, framing crop, wardrobe tone, or backdrop adjustments.`;
+
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await ai.models.generateContent({
+        model: FREE_VISION_MODEL,
+        contents: promptText,
+        config: {
+          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              suggestions: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+              },
+            },
+            required: ['suggestions'],
+          },
+        },
+      });
+
+      const parsed = JSON.parse((response.text ?? '{}').trim()) as {
+        suggestions?: unknown[];
+      };
+
+      const cleaned = Array.isArray(parsed.suggestions)
+        ? Array.from(
+            new Set(
+              parsed.suggestions
+                .filter((item): item is string => typeof item === 'string')
+                .map((item) => item.trim().replace(/^["'•\-–\d.)\s]+|["']+$/g, ''))
+                .filter((item) => item.length >= 6 && item.length <= 72)
+            )
+          ).slice(0, 4)
+        : [];
+
+      if (cleaned.length === 0) {
+        throw new Error('Model returned no usable retouch suggestions.');
+      }
+
+      res.json({ suggestions: cleaned });
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    }
+  }
+
+  const rawMessage = lastError instanceof Error ? lastError.message : '';
+  const lower = rawMessage.toLowerCase();
+  if (lower.includes('403') || lower.includes('permission_denied') || lower.includes('api_key_invalid')) {
+    res.status(403).json({
+      error: 'Gemini API key was rejected. Check your API key in Settings > Secrets.',
+    });
+    return;
+  }
+  if (lower.includes('429') || lower.includes('resource_exhausted')) {
+    res.status(429).json({
+      error: 'Rate limit reached on the Gemini API. Wait a moment and try Auto-Suggest again.',
+    });
+    return;
+  }
+  res.status(502).json({
+    error: 'Unable to generate retouch suggestions right now. Please try again.',
+  });
 });
 
 async function startServer() {
