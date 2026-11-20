@@ -369,6 +369,80 @@ function blurRgbaBuffer(
 }
 
 /**
+ * Luminance-guided unsharp mask directly on RGBA pixel data.
+ * Computes a smooth blurred luminance plate, extracts high-frequency edge detail above a
+ * gentle skin-safe noise threshold, and reinforces micro-contrast without chroma color noise.
+ */
+function applyUnsharpMaskRgba(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+  intensity: number,
+  weightMask?: Float32Array
+): void {
+  const clampedIntensity = clampUnit(intensity);
+  if (clampedIntensity <= 0.005 || width < 3 || height < 3) return;
+
+  const pixelCount = width * height;
+  const origLum = new Float32Array(pixelCount);
+  for (let i = 0; i < pixelCount; i++) {
+    const p = i * 4;
+    origLum[i] = 0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2];
+  }
+
+  // Resolution-proportional optical unsharp radius (~1–3 px)
+  const radius = Math.max(1, Math.min(3, Math.round(Math.max(width, height) / 560)));
+  const blurredLum = blurFloatMask(origLum, width, height, radius);
+
+  // Calibrated editorial sharpening gain with soft threshold to protect smooth skin & bokeh
+  const amount = clampedIntensity * 1.45;
+  const threshold = 3.2;
+
+  for (let i = 0; i < pixelCount; i++) {
+    const diff = origLum[i] - blurredLum[i];
+    const absDiff = Math.abs(diff);
+    if (absDiff <= threshold) continue;
+
+    // Soft-knee transition above threshold prevents gritty artifacts
+    const signedDetail = Math.sign(diff) * (absDiff - threshold);
+    const maskScale = weightMask ? 0.35 + weightMask[i] * 0.65 : 1;
+    const rawDelta = signedDetail * amount * maskScale;
+    const delta = Math.max(-44, Math.min(44, rawDelta));
+
+    const p = i * 4;
+    rgba[p] = clampByte(rgba[p] + delta);
+    rgba[p + 1] = clampByte(rgba[p + 1] + delta);
+    rgba[p + 2] = clampByte(rgba[p + 2] + delta);
+  }
+}
+
+/**
+ * Fast, non-destructive local unsharp masking directly on a rendered portrait data URL
+ * using the 2D canvas engine. Used by the RetouchPromptBar Sharpen intensity slider.
+ */
+export async function applyLocalUnsharpMask(
+  sourceImageUrl: string,
+  intensity: number
+): Promise<string> {
+  const clamped = clampUnit(intensity);
+  if (clamped <= 0.005) {
+    return sourceImageUrl;
+  }
+
+  const img = await loadImage(sourceImageUrl);
+  const w = Math.max(1, img.naturalWidth || img.width);
+  const h = Math.max(1, img.naturalHeight || img.height);
+  const { canvas, ctx } = createCleanCanvas(w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+
+  const imageData = ctx.getImageData(0, 0, w, h);
+  applyUnsharpMaskRgba(imageData.data, w, h, clamped);
+  ctx.putImageData(imageData, 0, 0);
+
+  return canvas.toDataURL('image/png');
+}
+
+/**
  * YCbCr skin likelihood estimate (0..1) so wardrobe tone styling protects face, neck, and arms.
  */
 function estimateSkinLikelihood(r: number, g: number, b: number): number {
@@ -998,12 +1072,20 @@ export async function renderStudioHeadshot(
   const outImageData = outCtx.createImageData(outW, outH);
   const outPx = outImageData.data;
 
+  const advancedPreset = recipe.advancedLightingPreset ?? 'none';
+
   const [rimR, rimG, rimB] =
-    recipe.lightingId === 'golden-rim'
-      ? [255, 212, 140]
-      : recipe.monochrome
-        ? [240, 240, 240]
-        : style.rimRgb;
+    advancedPreset === 'golden-hour'
+      ? [255, 206, 126]
+      : advancedPreset === 'noir-high-contrast'
+        ? [246, 246, 246]
+        : advancedPreset === 'soft-diffused'
+          ? [248, 245, 240]
+          : recipe.lightingId === 'golden-rim'
+            ? [255, 212, 140]
+            : recipe.monochrome
+              ? [240, 240, 240]
+              : style.rimRgb;
 
   const exposureMul = Math.pow(2, recipe.exposure * 0.85);
   const contrastFactor = 1 + recipe.contrast * 0.64;
@@ -1079,6 +1161,31 @@ export async function renderStudioHeadshot(
         fg = (fg - 128) * localContrast + 128;
         fb = (fb - 128) * localContrast + 128;
 
+        // Uniform creative tonal shaping for Advanced Lighting presets
+        if (advancedPreset === 'golden-hour') {
+          const warmLift = Math.max(0, (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255 - 0.35);
+          fr += warmLift * 14;
+          fg += warmLift * 6;
+          fb -= warmLift * 5;
+        } else if (advancedPreset === 'soft-diffused') {
+          // Gentle beauty-dish shadow lift across dark midtones
+          const softLum = (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255;
+          const fillBoost = Math.max(0, 1 - softLum * 1.45) * 14;
+          fr += fillBoost;
+          fg += fillBoost;
+          fb += fillBoost;
+        } else if (advancedPreset === 'noir-high-contrast') {
+          // Sculpted silver-gelatin S-curve on luminance
+          const nLum = Math.max(0, Math.min(1, (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255));
+          const curved = nLum < 0.5
+            ? 0.5 * Math.pow(nLum * 2, 1.22)
+            : 1 - 0.5 * Math.pow((1 - nLum) * 2, 1.18);
+          const ratio = nLum > 0.004 ? curved / nLum : 1;
+          fr *= ratio;
+          fg *= ratio;
+          fb *= ratio;
+        }
+
         // Subtle ambient shadow integration so subject black levels match the backdrop
         const lum = (0.299 * fr + 0.587 * fg + 0.114 * fb) / 255;
         const shadowBlend = Math.max(0, 1 - lum * 1.5) * 0.07;
@@ -1142,6 +1249,11 @@ export async function renderStudioHeadshot(
       outPx[pIdx + 2] = clampByte(outB);
       outPx[pIdx + 3] = 255;
     }
+  }
+
+  // Apply optical unsharp masking when configured in the darkroom recipe
+  if ((recipe.sharpen ?? 0) > 0.005) {
+    applyUnsharpMaskRgba(outPx, outW, outH, recipe.sharpen ?? 0, fgMask);
   }
 
   outCtx.putImageData(outImageData, 0, 0);

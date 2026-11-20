@@ -8,7 +8,9 @@ import {
   FRAMING_OPTIONS,
   LIGHTING_OPTIONS,
   STUDIO_STYLES,
+  applyAdvancedLightingPreset,
   buildDefaultRecipe,
+  getAdvancedLightingPresetById,
   getAttireById,
   getFramingById,
   getLightingById,
@@ -127,6 +129,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     attireId,
     framingId,
     lightingId,
+    advancedLightingPreset,
     aspectRatio,
     extraNotes,
   } = req.body ?? {};
@@ -135,6 +138,7 @@ app.post('/api/headshots/plan', async (req, res) => {
   const safeAttire = getAttireById(attireId);
   const safeFraming = getFramingById(framingId);
   const safeLighting = getLightingById(lightingId);
+  const safeAdvancedPreset = getAdvancedLightingPresetById(advancedLightingPreset);
   const safeAspect = normalizeAspectRatio(aspectRatio);
 
   const baseRecipe = buildDefaultRecipe({
@@ -142,6 +146,7 @@ app.post('/api/headshots/plan', async (req, res) => {
     attireId: safeAttire.id,
     framingId: safeFraming.id,
     lightingId: safeLighting.id,
+    advancedLightingPreset: safeAdvancedPreset.id,
     aspectRatio: safeAspect,
     extraNotes: typeof extraNotes === 'string' ? extraNotes : '',
   });
@@ -239,27 +244,30 @@ Return:
       faceHeightRatio: clamp(parsed.faceHeightRatio, 0.15, 0.65, 0.34),
     };
 
-    const calibratedRecipe: DarkroomRecipe = {
-      ...baseRecipe,
-      exposure: clamp(
-        baseRecipe.exposure + clamp(parsed.exposureDelta, -0.22, 0.22, 0),
-        -0.35,
-        0.35,
-        baseRecipe.exposure
-      ),
-      warmth: clamp(
-        baseRecipe.warmth + clamp(parsed.warmthDelta, -0.2, 0.2, 0),
-        -0.35,
-        0.35,
-        baseRecipe.warmth
-      ),
-      contrast: clamp(
-        baseRecipe.contrast + clamp(parsed.contrastDelta, -0.12, 0.18, 0),
-        -0.3,
-        0.4,
-        baseRecipe.contrast
-      ),
-    };
+    const calibratedRecipe: DarkroomRecipe = applyAdvancedLightingPreset(
+      {
+        ...baseRecipe,
+        exposure: clamp(
+          baseRecipe.exposure + clamp(parsed.exposureDelta, -0.22, 0.22, 0),
+          -0.35,
+          0.35,
+          baseRecipe.exposure
+        ),
+        warmth: clamp(
+          baseRecipe.warmth + clamp(parsed.warmthDelta, -0.2, 0.2, 0),
+          -0.35,
+          0.35,
+          baseRecipe.warmth
+        ),
+        contrast: clamp(
+          baseRecipe.contrast + clamp(parsed.contrastDelta, -0.12, 0.18, 0),
+          -0.3,
+          0.4,
+          baseRecipe.contrast
+        ),
+      },
+      safeAdvancedPreset.id
+    );
 
     res.json({
       anchor,
@@ -298,6 +306,8 @@ app.post('/api/headshots/retouch-recipe', async (req, res) => {
       attireId: getAttireById(currentRecipe?.attireId).id,
       framingId: getFramingById(currentRecipe?.framingId).id,
       lightingId: getLightingById(currentRecipe?.lightingId).id,
+      advancedLightingPreset: getAdvancedLightingPresetById(currentRecipe?.advancedLightingPreset)
+        .id,
       aspectRatio: normalizeAspectRatio(currentRecipe?.aspectRatio),
       extraNotes: '',
     }),
@@ -410,6 +420,9 @@ Rules:
       grain: clamp(parsed.grain, 0, 0.35, fallbackRecipe.grain),
       zoomAdjust: clamp(parsed.zoomAdjust, 0.85, 1.35, fallbackRecipe.zoomAdjust),
       verticalOffset: clamp(parsed.verticalOffset, -0.15, 0.15, fallbackRecipe.verticalOffset),
+      sharpen: clamp(fallbackRecipe.sharpen, 0, 1, 0),
+      advancedLightingPreset: getAdvancedLightingPresetById(fallbackRecipe.advancedLightingPreset)
+        .id,
     };
 
     res.json({

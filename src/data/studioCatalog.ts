@@ -21,6 +21,12 @@ export type LightingId =
   | 'golden-rim'
   | 'diffused-window';
 
+export type AdvancedLightingPresetId =
+  | 'none'
+  | 'golden-hour'
+  | 'noir-high-contrast'
+  | 'soft-diffused';
+
 export type AspectRatioOption = '3:4' | '1:1' | '4:3';
 
 export interface DarkroomRecipe {
@@ -53,6 +59,10 @@ export interface DarkroomRecipe {
   zoomAdjust: number;
   /** -0.15 to +0.15 vertical framing nudge */
   verticalOffset: number;
+  /** 0 to 1.0 local unsharp mask intensity */
+  sharpen?: number;
+  /** Optional creative lighting preset override */
+  advancedLightingPreset?: AdvancedLightingPresetId;
 }
 
 export interface FramingAnchor {
@@ -98,6 +108,7 @@ export interface StudioDirectionConfig {
   attireId: AttireId;
   framingId: FramingId;
   lightingId: LightingId;
+  advancedLightingPreset: AdvancedLightingPresetId;
   aspectRatio: AspectRatioOption;
   extraNotes: string;
 }
@@ -106,6 +117,8 @@ export interface GeneratedTake {
   id: string;
   frameNumber: number;
   imageUrl: string;
+  /** Unsharpened render preserved for non-destructive local unsharp mask slider adjustments */
+  baseImageUrl?: string;
   sourceImageUrl: string;
   alignedSourceUrl?: string;
   styleId: StyleId;
@@ -311,6 +324,39 @@ export const LIGHTING_OPTIONS: StudioControlOption<LightingId>[] = [
   { id: 'diffused-window', label: 'Diffused Window', shortSpec: 'Natural directional' },
 ];
 
+export interface AdvancedLightingPresetOption {
+  id: AdvancedLightingPresetId;
+  label: string;
+  description: string;
+  targetLightingId?: LightingId;
+}
+
+export const ADVANCED_LIGHTING_PRESETS: AdvancedLightingPresetOption[] = [
+  {
+    id: 'none',
+    label: 'Default Studio Balance',
+    description: 'Uses your selected style and lighting setup without extra tonal overrides.',
+  },
+  {
+    id: 'golden-hour',
+    label: 'Golden Hour',
+    description: 'Warm amber sunset glow, luminous highlights, and golden hair-rim separation.',
+    targetLightingId: 'golden-rim',
+  },
+  {
+    id: 'noir-high-contrast',
+    label: 'Noir High-Contrast',
+    description: 'Deep silver-gelatin monochrome contrast, sculpted shadows, and fine editorial grain.',
+    targetLightingId: 'rembrandt',
+  },
+  {
+    id: 'soft-diffused',
+    label: 'Soft Diffused',
+    description: 'Airy beauty-dish diffusion with lifted midtones and gentle shadow rolloff.',
+    targetLightingId: 'diffused-window',
+  },
+];
+
 export const ASPECT_RATIO_OPTIONS: { id: AspectRatioOption; label: string; useCase: string }[] = [
   { id: '3:4', label: '3:4 Portrait', useCase: 'Press & Bio' },
   { id: '1:1', label: '1:1 Square', useCase: 'LinkedIn & Avatar' },
@@ -342,14 +388,77 @@ export function getLightingById(id: string): StudioControlOption<LightingId> {
   return LIGHTING_OPTIONS.find((l) => l.id === id) ?? LIGHTING_OPTIONS[0];
 }
 
+export function getAdvancedLightingPresetById(id?: string): AdvancedLightingPresetOption {
+  return (
+    ADVANCED_LIGHTING_PRESETS.find((preset) => preset.id === id) ?? ADVANCED_LIGHTING_PRESETS[0]
+  );
+}
+
+export function applyAdvancedLightingPreset(
+  recipe: DarkroomRecipe,
+  presetId?: AdvancedLightingPresetId
+): DarkroomRecipe {
+  const safePreset = getAdvancedLightingPresetById(presetId).id;
+  if (safePreset === 'none') {
+    return { ...recipe, advancedLightingPreset: 'none' };
+  }
+
+  switch (safePreset) {
+    case 'golden-hour':
+      return {
+        ...recipe,
+        advancedLightingPreset: 'golden-hour',
+        lightingId: 'golden-rim',
+        monochrome: false,
+        exposure: Math.min(0.32, Math.max(0.08, recipe.exposure + 0.06)),
+        warmth: Math.min(0.35, Math.max(0.22, recipe.warmth + 0.16)),
+        saturation: Math.min(0.3, Math.max(0.08, recipe.saturation + 0.1)),
+        contrast: Math.max(0.05, Math.min(0.24, recipe.contrast)),
+        rimLight: Math.max(0.86, recipe.rimLight),
+        vignette: Math.min(0.34, Math.max(0.2, recipe.vignette)),
+      };
+    case 'noir-high-contrast':
+      return {
+        ...recipe,
+        advancedLightingPreset: 'noir-high-contrast',
+        lightingId: 'rembrandt',
+        monochrome: true,
+        saturation: -1,
+        warmth: 0,
+        exposure: Math.max(-0.22, Math.min(0.04, recipe.exposure - 0.05)),
+        contrast: Math.min(0.4, Math.max(0.32, recipe.contrast + 0.18)),
+        vignette: Math.min(0.68, Math.max(0.52, recipe.vignette + 0.16)),
+        rimLight: Math.max(0.7, recipe.rimLight),
+        keyLightStrength: Math.max(0.82, recipe.keyLightStrength),
+        grain: Math.max(0.16, recipe.grain),
+      };
+    case 'soft-diffused':
+      return {
+        ...recipe,
+        advancedLightingPreset: 'soft-diffused',
+        lightingId: 'diffused-window',
+        monochrome: false,
+        exposure: Math.min(0.32, Math.max(0.1, recipe.exposure + 0.08)),
+        contrast: Math.max(-0.18, Math.min(-0.04, recipe.contrast - 0.12)),
+        warmth: Math.max(-0.04, Math.min(0.1, recipe.warmth + 0.03)),
+        saturation: Math.max(-0.08, Math.min(0.06, recipe.saturation)),
+        vignette: Math.min(0.16, recipe.vignette),
+        rimLight: Math.min(0.42, Math.max(0.28, recipe.rimLight)),
+        keyLightStrength: Math.min(0.36, recipe.keyLightStrength),
+        grain: Math.min(0.05, recipe.grain),
+      };
+  }
+}
+
 export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecipe {
   const style = getStyleById(config.styleId);
   const base = style.defaultRecipe;
-  return {
+  const baseRecipe: DarkroomRecipe = {
     styleId: config.styleId,
     attireId: config.attireId,
     framingId: config.framingId,
     lightingId: config.lightingId,
+    advancedLightingPreset: config.advancedLightingPreset ?? 'none',
     aspectRatio: config.aspectRatio,
     exposure: base.exposure ?? 0.04,
     contrast: base.contrast ?? 0.1,
@@ -363,5 +472,7 @@ export function buildDefaultRecipe(config: StudioDirectionConfig): DarkroomRecip
     grain: base.grain ?? 0.08,
     zoomAdjust: 1,
     verticalOffset: 0,
+    sharpen: 0,
   };
+  return applyAdvancedLightingPreset(baseRecipe, config.advancedLightingPreset);
 }

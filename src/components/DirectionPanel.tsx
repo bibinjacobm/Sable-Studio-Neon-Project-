@@ -1,15 +1,18 @@
 import React, { useState } from 'react';
-import { Camera, Check, SlidersHorizontal, Sparkles } from 'lucide-react';
+import { Camera, Check, ChevronDown, SlidersHorizontal, Sparkles } from 'lucide-react';
 import {
+  ADVANCED_LIGHTING_PRESETS,
   ASPECT_RATIO_OPTIONS,
   ATTIRE_OPTIONS,
   FRAMING_OPTIONS,
   LIGHTING_OPTIONS,
   STUDIO_STYLES,
+  getAdvancedLightingPresetById,
   getAttireById,
   getFramingById,
   getLightingById,
   getStyleById,
+  type AdvancedLightingPresetId,
   type AspectRatioOption,
   type AttireId,
   type FramingId,
@@ -30,6 +33,7 @@ interface DirectionPanelProps {
   onAttireSelect: (attireId: AttireId) => void;
   onFramingSelect: (framingId: FramingId) => void;
   onLightingSelect: (lightingId: LightingId) => void;
+  onAdvancedLightingSelect: (presetId: AdvancedLightingPresetId) => void;
   onAspectRatioSelect: (ratio: AspectRatioOption) => void;
   onExtraNotesChange: (notes: string) => void;
   onApplyCritique: () => void;
@@ -47,6 +51,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   onAttireSelect,
   onFramingSelect,
   onLightingSelect,
+  onAdvancedLightingSelect,
   onAspectRatioSelect,
   onExtraNotesChange,
   onApplyCritique,
@@ -54,6 +59,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
   onUploadClick,
 }) => {
   const [failedImages, setFailedImages] = useState<Record<string, boolean>>({});
+  const selectedAdvancedPreset = getAdvancedLightingPresetById(config.advancedLightingPreset);
 
   return (
     <div className="flex flex-col gap-6">
@@ -258,6 +264,50 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
         </div>
       </div>
 
+      {/* Advanced Lighting Creative Preset Dropdown */}
+      <div className="border-t border-white/[0.07] pt-4">
+        <div className="mb-2 flex items-baseline justify-between gap-2">
+          <label
+            htmlFor="advanced-lighting-preset"
+            className="text-xs font-semibold text-[#F5F1E8]"
+          >
+            Advanced Lighting
+          </label>
+          <span className="text-[11px] text-[#9B968C]">
+            {config.advancedLightingPreset === 'none' ? 'Optional override' : 'Preset active'}
+          </span>
+        </div>
+
+        <div className="relative">
+          <select
+            id="advanced-lighting-preset"
+            value={config.advancedLightingPreset}
+            onChange={(e) =>
+              onAdvancedLightingSelect(e.target.value as AdvancedLightingPresetId)
+            }
+            className={`min-h-[42px] w-full appearance-none rounded-md border bg-[#0B0B0C] py-2 pr-9 pl-3 text-xs font-medium text-[#F5F1E8] transition-colors duration-150 focus:border-[#D4A853] focus:outline-none cursor-pointer ${
+              config.advancedLightingPreset !== 'none'
+                ? 'border-[#D4A853]/70'
+                : 'border-white/[0.1] hover:border-white/25'
+            }`}
+          >
+            {ADVANCED_LIGHTING_PRESETS.map((preset) => (
+              <option key={preset.id} value={preset.id} className="bg-[#141416] text-[#F5F1E8]">
+                {preset.label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown
+            className="pointer-events-none absolute top-1/2 right-3 h-4 w-4 -translate-y-1/2 text-[#9B968C]"
+            aria-hidden="true"
+          />
+        </div>
+
+        <p className="mt-1.5 text-[11px] leading-relaxed text-[#9B968C]">
+          {selectedAdvancedPreset.description}
+        </p>
+      </div>
+
       {/* 05. Output Format & Optional Art Direction */}
       <div className="space-y-4 border-t border-white/[0.07] pt-4">
         <div>
@@ -322,6 +372,7 @@ export const DirectionPanel: React.FC<DirectionPanelProps> = ({
           type="button"
           onClick={onGenerate}
           disabled={isGenerating}
+          title="Generate Studio Headshot (G)"
           className="inline-flex min-h-[48px] w-full items-center justify-center gap-2 rounded-md bg-[#F5F1E8] px-5 py-3 text-sm font-semibold text-[#0B0B0C] transition-colors duration-150 hover:bg-[#E7E0D0] disabled:cursor-not-allowed disabled:bg-white/15 disabled:text-[#9B968C] cursor-pointer"
         >
           <Sparkles className="h-4 w-4 shrink-0" aria-hidden="true" />

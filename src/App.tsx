@@ -1,11 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, History, SlidersHorizontal, X } from 'lucide-react';
 import {
+  applyAdvancedLightingPreset,
   buildDefaultRecipe,
+  getAdvancedLightingPresetById,
   getAttireById,
   getFramingById,
   getLightingById,
   getStyleById,
+  type AdvancedLightingPresetId,
   type AspectRatioOption,
   type AttireId,
   type DarkroomRecipe,
@@ -26,12 +29,15 @@ import { HistoryViewPanel } from './components/HistoryViewPanel';
 import { DarkroomReel } from './components/DarkroomReel';
 import { StyleLookbookSection } from './components/StyleLookbookSection';
 import { PortraitLightbox } from './components/PortraitLightbox';
+import { ShortcutsModal } from './components/ShortcutsModal';
+import { useStudioShortcuts } from './hooks/useStudioShortcuts';
 import {
   buildTakeExifMetadata,
   downloadPortrait,
   processSelfieFile,
 } from './utils/imageProcessing';
 import {
+  applyLocalUnsharpMask,
   renderStudioHeadshot,
   segmentSelfie,
   type SegmentationMasks,
@@ -48,6 +54,7 @@ const INITIAL_CONFIG: StudioDirectionConfig = {
   attireId: 'keep-original',
   framingId: 'head-shoulders',
   lightingId: 'softbox-key',
+  advancedLightingPreset: 'none',
   aspectRatio: '3:4',
   extraNotes: '',
 };
@@ -76,13 +83,17 @@ export default function App() {
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationPhase, setGenerationPhase] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState<boolean>(false);
+  const [isSharpening, setIsSharpening] = useState<boolean>(false);
   const [elapsedSeconds, setElapsedSeconds] = useState<number>(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lightboxOpen, setLightboxOpen] = useState<boolean>(false);
+  const [shortcutsModalOpen, setShortcutsModalOpen] = useState<boolean>(false);
   const [rightPanelMode, setRightPanelMode] = useState<'direction' | 'history'>('direction');
 
   const rightPanelRef = useRef<HTMLElement | null>(null);
   const frameCounterRef = useRef<number>(0);
+  const sharpenJobRef = useRef<number>(0);
+  const sharpenTimerRef = useRef<number | null>(null);
 
   const selectedStyle = useMemo(() => getStyleById(config.styleId), [config.styleId]);
   const activeTake = useMemo(
@@ -101,6 +112,14 @@ export default function App() {
     }, 100);
     return () => window.clearInterval(timer);
   }, [isGenerating]);
+
+  useEffect(() => {
+    return () => {
+      if (sharpenTimerRef.current !== null) {
+        window.clearTimeout(sharpenTimerRef.current);
+      }
+    };
+  }, []);
 
   const openFilePicker = () => {
     fileInputRef.current?.click();
@@ -215,6 +234,7 @@ export default function App() {
         attireId: config.attireId,
         framingId: config.framingId,
         lightingId: config.lightingId,
+        advancedLightingPreset: config.advancedLightingPreset,
         aspectRatio: config.aspectRatio,
         extraNotes: config.extraNotes,
       });
@@ -225,12 +245,12 @@ export default function App() {
 
       if (planData?.anchor && planData?.recipe) {
         anchor = planData.anchor;
-        recipe = planData.recipe;
+        recipe = applyAdvancedLightingPreset(planData.recipe, config.advancedLightingPreset);
         directorNote = planData.directorNote;
       } else {
         const localPlan = await planFramingLocally(sourcePortrait.dataUrl, config);
         anchor = localPlan.anchor;
-        recipe = localPlan.recipe;
+        recipe = applyAdvancedLightingPreset(localPlan.recipe, config.advancedLightingPreset);
         directorNote = localPlan.directorNote;
       }
 
@@ -245,18 +265,24 @@ export default function App() {
         anchor
       );
 
+      const resolvedLightingLabel =
+        recipe.advancedLightingPreset && recipe.advancedLightingPreset !== 'none'
+          ? getAdvancedLightingPresetById(recipe.advancedLightingPreset).label
+          : getLightingById(recipe.lightingId).label;
+
       frameCounterRef.current += 1;
       const newTake: GeneratedTake = {
         id: `take-${Date.now()}-${frameCounterRef.current}`,
         frameNumber: frameCounterRef.current,
         imageUrl,
+        baseImageUrl: imageUrl,
         sourceImageUrl: sourcePortrait.dataUrl,
         alignedSourceUrl,
         styleId: recipe.styleId,
         styleName: getStyleById(recipe.styleId).name,
         attireLabel: getAttireById(recipe.attireId).label,
         framingLabel: getFramingById(recipe.framingId).label,
-        lightingLabel: getLightingById(recipe.lightingId).label,
+        lightingLabel: resolvedLightingLabel,
         aspectRatio: recipe.aspectRatio,
         recipe,
         anchor,
@@ -308,12 +334,17 @@ export default function App() {
 
       setGenerationPhase('Re-exposing studio plate');
       const masks = await getOrComputeMasks(activeTake.sourceImageUrl, activeTake.anchor);
-      const { imageUrl, alignedSourceUrl } = await renderStudioHeadshot(
+      const targetSharpen = nextRecipe.sharpen ?? 0;
+      const { imageUrl: cleanBaseUrl, alignedSourceUrl } = await renderStudioHeadshot(
         activeTake.sourceImageUrl,
         masks,
-        nextRecipe,
+        { ...nextRecipe, sharpen: 0 },
         activeTake.anchor
       );
+      const finalImageUrl =
+        targetSharpen > 0.005
+          ? await applyLocalUnsharpMask(cleanBaseUrl, targetSharpen)
+          : cleanBaseUrl;
 
       // Keep direction controls aligned with any backdrop/attire/lighting changes made via retouching
       setConfig((prev) => ({
@@ -328,7 +359,8 @@ export default function App() {
       const newTake: GeneratedTake = {
         id: `take-${Date.now()}-${frameCounterRef.current}`,
         frameNumber: frameCounterRef.current,
-        imageUrl,
+        imageUrl: finalImageUrl,
+        baseImageUrl: cleanBaseUrl,
         sourceImageUrl: activeTake.sourceImageUrl,
         alignedSourceUrl,
         styleId: nextRecipe.styleId,
@@ -370,6 +402,7 @@ export default function App() {
         attireId: found.recipe.attireId,
         framingId: found.recipe.framingId,
         lightingId: found.recipe.lightingId,
+        advancedLightingPreset: found.recipe.advancedLightingPreset ?? 'none',
         aspectRatio: found.recipe.aspectRatio,
       }));
     }
@@ -402,9 +435,111 @@ export default function App() {
     });
   };
 
+  const handleSharpenChange = (intensity: number) => {
+    if (!activeTake || isGenerating) return;
+    const clamped = Math.max(0, Math.min(1, intensity));
+    const targetId = activeTake.id;
+    const baseUrl = activeTake.baseImageUrl ?? activeTake.imageUrl;
+
+    // Update slider readout & recipe immediately for responsive control feel
+    setTakes((prev) =>
+      prev.map((item) =>
+        item.id === targetId
+          ? {
+              ...item,
+              baseImageUrl: item.baseImageUrl ?? item.imageUrl,
+              imageUrl: clamped <= 0.005 ? baseUrl : item.imageUrl,
+              recipe: { ...item.recipe, sharpen: clamped },
+            }
+          : item
+      )
+    );
+
+    if (sharpenTimerRef.current !== null) {
+      window.clearTimeout(sharpenTimerRef.current);
+      sharpenTimerRef.current = null;
+    }
+
+    const jobId = ++sharpenJobRef.current;
+    if (clamped <= 0.005) {
+      setIsSharpening(false);
+      return;
+    }
+
+    setIsSharpening(true);
+    sharpenTimerRef.current = window.setTimeout(() => {
+      sharpenTimerRef.current = null;
+      void applyLocalUnsharpMask(baseUrl, clamped)
+        .then((sharpenedUrl) => {
+          if (sharpenJobRef.current !== jobId) return;
+          setTakes((prev) =>
+            prev.map((item) =>
+              item.id === targetId
+                ? {
+                    ...item,
+                    baseImageUrl: baseUrl,
+                    imageUrl: sharpenedUrl,
+                    recipe: { ...item.recipe, sharpen: clamped },
+                  }
+                : item
+            )
+          );
+        })
+        .catch(() => {
+          if (sharpenJobRef.current !== jobId) return;
+          setErrorMessage('Unable to apply unsharp masking on this frame.');
+        })
+        .finally(() => {
+          if (sharpenJobRef.current === jobId) {
+            setIsSharpening(false);
+          }
+        });
+    }, 40);
+  };
+
   const handleDownloadTake = (take: GeneratedTake) => {
     downloadPortrait(take.imageUrl, take.frameNumber, take.styleName, buildTakeExifMetadata(take));
   };
+
+  const handleStepActiveTake = (delta: -1 | 1) => {
+    if (takes.length < 2) return;
+    const currentIndex = takes.findIndex((t) => t.id === activeTakeId);
+    const baseIndex = currentIndex === -1 ? 0 : currentIndex;
+    const nextIndex = (baseIndex + delta + takes.length) % takes.length;
+    handleSelectTake(takes[nextIndex].id);
+  };
+
+  useStudioShortcuts({
+    canCompare: Boolean(activeTake && activeTake.sourceImageUrl),
+    canGenerate: !isGenerating,
+    hasActiveTake: Boolean(activeTake),
+    hasMultipleTakes: takes.length > 1,
+    isLightboxOpen: lightboxOpen,
+    isShortcutsModalOpen: shortcutsModalOpen,
+    onToggleSplitCompare: () => {
+      setCompareMode((prev) => (prev === 'split' ? 'after' : 'split'));
+    },
+    onToggleOriginalCompare: () => {
+      setCompareMode((prev) => (prev === 'before' ? 'after' : 'before'));
+    },
+    onGenerate: () => {
+      void handleGenerateHeadshot();
+    },
+    onToggleHistory: handleToggleHistoryPanel,
+    onStepTake: handleStepActiveTake,
+    onToggleInspect: () => {
+      if (activeTake) {
+        setLightboxOpen((prev) => !prev);
+      }
+    },
+    onDownloadActive: () => {
+      if (activeTake) {
+        handleDownloadTake(activeTake);
+      }
+    },
+    onToggleShortcutsModal: () => setShortcutsModalOpen((prev) => !prev),
+    onCloseShortcutsModal: () => setShortcutsModalOpen(false),
+  });
 
   return (
     <div className="min-h-screen bg-[#0B0B0C] text-[#F5F1E8]">
@@ -494,9 +629,12 @@ export default function App() {
               activeTake={activeTake}
               critique={critique}
               promptValue={retouchPrompt}
+              sharpenIntensity={activeTake?.recipe.sharpen ?? 0}
               isGenerating={isGenerating}
+              isSharpening={isSharpening}
               onPromptChange={setRetouchPrompt}
               onSubmitPrompt={(custom) => void handleApplyRetouch(custom)}
+              onSharpenChange={handleSharpenChange}
             />
           </div>
 
@@ -583,8 +721,20 @@ export default function App() {
                     setConfig((prev) => ({ ...prev, framingId }))
                   }
                   onLightingSelect={(lightingId: LightingId) =>
-                    setConfig((prev) => ({ ...prev, lightingId }))
+                    setConfig((prev) => ({
+                      ...prev,
+                      lightingId,
+                      advancedLightingPreset: 'none',
+                    }))
                   }
+                  onAdvancedLightingSelect={(presetId: AdvancedLightingPresetId) => {
+                    const preset = getAdvancedLightingPresetById(presetId);
+                    setConfig((prev) => ({
+                      ...prev,
+                      advancedLightingPreset: preset.id,
+                      lightingId: preset.targetLightingId ?? prev.lightingId,
+                    }));
+                  }}
                   onAspectRatioSelect={(aspectRatio: AspectRatioOption) =>
                     setConfig((prev) => ({ ...prev, aspectRatio }))
                   }
@@ -634,6 +784,13 @@ export default function App() {
             <a href="#guide" className="transition-colors hover:text-[#F5F1E8]">
               Capture Guide
             </a>
+            <button
+              type="button"
+              onClick={() => setShortcutsModalOpen(true)}
+              className="transition-colors hover:text-[#F5F1E8] whitespace-nowrap cursor-pointer"
+            >
+              Shortcuts <span className="font-mono text-[#D4A853]">?</span>
+            </button>
           </div>
         </div>
       </footer>
@@ -642,6 +799,11 @@ export default function App() {
         take={lightboxOpen ? activeTake : null}
         onClose={() => setLightboxOpen(false)}
         onDownload={handleDownloadTake}
+      />
+
+      <ShortcutsModal
+        isOpen={shortcutsModalOpen}
+        onClose={() => setShortcutsModalOpen(false)}
       />
     </div>
   );
